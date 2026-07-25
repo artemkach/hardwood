@@ -37,10 +37,12 @@ Logical-type annotations (STRING, DATE, TIMESTAMP, DECIMAL, UUID, …) are in sc
 column's physical bytes are written by the primitive-type increment, and the annotation
 is serialized onto the schema and converted at the API boundary.
 
-Sequenced as later work, each its own design: DataPage V2, the Avro write API, the
-optional index structures (OffsetIndex, ColumnIndex, Bloom filters), the optional delta
-and byte-stream-split encoders, a CLI write/convert command, and the S3 `OutputFile`
-backend. Sorting-column metadata and custom record materializers are non-goals.
+The optional index structures — OffsetIndex, ColumnIndex, and Bloom filters, with the
+per-page statistics that drive page-level pruning (including the `DataPageHeader` inline
+statistics) — are numbered increments 20–21 below, on the settled surface alongside the S3
+`OutputFile` backend (increment 19). Sequenced as separate later milestones, each its own
+design: DataPage V2, the Avro write API, and a CLI write/convert command. Sorting-column
+metadata and custom record materializers are non-goals.
 
 ## Write model
 
@@ -170,8 +172,13 @@ public interface OutputFile extends Closeable {
   write never leaves a truncated file presented as valid.
 - **In-memory backend** (`internal.writer.ByteBufferOutputFile`): a growable buffer,
   the write-side counterpart to `ByteBufferInputFile`, used for tests and round-trips.
-- **S3 backend** (later): sequential writes buffer to the multipart part size and
-  upload parts; `close()` completes the multipart upload.
+- **S3 backend** (`internal.writer.S3OutputFile`, increment 19): sequential writes buffer
+  to the multipart part size and upload parts; `close()` completes the multipart upload.
+  In-flight bytes are bounded to the part size times a small concurrency multiple, so a
+  fast producer cannot outrun the uploads; `CreateMultipartUpload` is deferred until the
+  first part flushes, with a single `PutObject` for an output that never exceeds one part.
+  It reuses the read-side S3 / SigV4 stack (`_designs/S3_OBJECT_STORAGE.md`,
+  `_designs/S3_ZERO_SDK.md`).
 
 A file is valid only after `close()` returns successfully. A writer abandoned before
 `close()` produces no footer and therefore no readable file.
@@ -242,13 +249,19 @@ The writer auto-selects sensible per-column encodings and exposes overrides thro
 
 - **Levels**: definition and repetition levels are RLE/bit-packed via `LevelEncoder`
   (flat schemas have no repetition levels; nested columns add a repetition-level stream).
-- **Values**: `PLAIN` is the correctness baseline. `RLE_DICTIONARY` with plain
-  fallback (on dictionary-size overflow) is the default for eligible columns, matching
-  the reader's dictionary fast paths. The delta and byte-stream-split encodings are
-  optional and deferred to a later breadth increment.
+- **Values**: `PLAIN` is the correctness baseline. `RLE_DICTIONARY` is the default for
+  eligible columns, matching the reader's dictionary fast paths; a column chunk that is
+  not dictionary-friendly is written `PLAIN` instead. The dictionary-vs-`PLAIN` choice is
+  made per column chunk from its cardinality — incrementally with a mid-chunk `PLAIN`
+  fallback on dictionary-size overflow initially (stage 9), then as a row-group-global
+  decision taken once the group is buffered (stage 16), so no chunk mixes encodings. The
+  delta and byte-stream-split encodings are optional and deferred to a later breadth
+  increment.
 - **Compression**: `UNCOMPRESSED` first, then `SNAPPY` / `ZSTD` / `GZIP` / `LZ4` —
   the existing codec libraries are bidirectional, so the encode side reuses them.
-  Default codec is `ZSTD`.
+  The default codec is `ZSTD` when the zstd-jni library is on the classpath and
+  `UNCOMPRESSED` otherwise, so a caller who did not ask to compress is not forced to
+  carry the optional dependency; selecting a codec explicitly still requires its library.
 
 `WriterConfig` knobs: row-group size, page size, dictionary page-size limit, codec,
 and the written `created_by` string.
@@ -259,10 +272,18 @@ and the written `created_by` string.
 during encoding and writes them into `ColumnMetaData`, so produced files support
 reader-side predicate pushdown. `min`/`max` ordering follows the column's
 `ColumnOrder` (the same ordering the reader honors on read), so written statistics
-are pruning-correct. Long `BYTE_ARRAY` `min`/`max` are truncated per the format's
+are pruning-correct. The bounds are the preferred `min_value` / `max_value` — never the
+deprecated `min` / `max` — and each is flagged exact via `is_min_value_exact` /
+`is_max_value_exact`, so a reader may treat `min_value == max_value` as proof that a whole
+chunk holds a single value. Long `BYTE_ARRAY` `min`/`max` are truncated per the format's
 binary min/max truncation rule, keeping statistics bounded while remaining valid for
-pruning. OffsetIndex, ColumnIndex, and Bloom filters are deferred; a file is valid
-without them.
+pruning; a truncated bound is flagged **inexact** (`is_*_value_exact = false`), since it is
+then only a bound and not the actual extreme.
+
+These are **column-chunk** statistics, feeding row-group pruning. Per-page statistics — the
+`DataPageHeader` inline statistics and the OffsetIndex / ColumnIndex structures that enable
+page-level skipping — arrive with page index writing (increment 20), and Bloom filters with
+increment 21. A file is valid without any of them.
 
 ## Threading model
 
@@ -329,33 +350,39 @@ API), *Optimization*, *Spike* (design-only), or *Docs* (user-facing documentatio
 | 7 | **List shredding** (`INT32` leaves): `REPEATED` fields — repetition levels via `LevelEncoder`, offset-driven nested input. | Dimension | The repetition-level data model is settled | 3.3 (rep levels), 6.3 | [x] |
 | 8 | **Map shredding** (`INT32` leaves): key/value repeated group, reusing the list machinery. | Dimension | The full nested shape (structs, lists, maps) is settled | 6.3 | [x] |
 | 9 | Dictionary encoding (`INT32`): dictionary page + `RLE_DICTIONARY` indices + plain fallback, exercised on nullable and nested columns so the level + dictionary-index page layout is proven together. Settled in `_designs/WRITER_DICTIONARY.md`. | Dimension | Dictionary column-chunk layout proven, incl. nulls and nesting | 2.2 | [x] |
-| 10 | Compression on the write path (`INT32`, one codec). | Dimension | Compress step + compressed/uncompressed size accounting proven | 6.2 (page compression) | [ ] |
-| 11 | Column statistics (`INT32`: `min`/`max`/`null_count`, `ColumnOrder`-correct) accumulated during encode. | Dimension | Produced files support pushdown | 9.1 (stats) | [ ] |
-| 12 | All primitive physical types (incl. `FIXED_LEN_BYTE_ARRAY` type length and `BYTE_ARRAY` min/max truncation), each inheriting paging, nulls, nesting, dictionary, compression and stats. Variable-width values end the constant-bytes-per-row assumption, so the row-group flush moves from the fixed rows-per-group proxy (`rowGroupTargetBytes / (columnCount × 4)`) to tracking the actual buffered uncompressed bytes. | Breadth | Write any column type, flat or nested | 2.1, 9.1 (truncation) | [ ] |
+| 10 | Compression on the write path (`INT32`, one codec). | Dimension | Compress step + compressed/uncompressed size accounting proven | 6.2 (page compression) | [x] |
+| 11 | Column statistics (`INT32`: `min`/`max`/`null_count`, `ColumnOrder`-correct) accumulated during encode. | Dimension | Produced files support pushdown | 9.1 (stats) | [x] |
+| 12 | All primitive physical types (incl. `FIXED_LEN_BYTE_ARRAY` type length and `BYTE_ARRAY` min/max truncation), each inheriting paging, nulls, nesting, dictionary, compression and stats. Truncated `BYTE_ARRAY` bounds are flagged inexact (`is_min_value_exact` / `is_max_value_exact` = false), extending the exactness the fixed-width types write unconditionally as true. Variable-width values end the constant-bytes-per-row assumption, so the row-group flush moves from the fixed rows-per-group proxy (`rowGroupTargetBytes / (columnCount × 4)`) to tracking the actual buffered uncompressed bytes. | Breadth | Write any column type, flat or nested | 2.1, 9.1 (truncation) | [ ] |
 | 13 | Logical-type annotations: `LogicalTypeWriter` serializes the `LogicalType` union and legacy `converted_type`/`scale`/`precision`; `FileSchema.Builder` logical-type overload. Both annotations are emitted together for every type with a legacy equivalent (STRING, DATE, DECIMAL, the INT/UINT widths, TIME/TIMESTAMP millis+micros, ENUM, JSON, BSON, `LIST`, `MAP`), the union taking read precedence and the `converted_type` kept for pre-union readers; only types without a legacy equivalent (UUID, FLOAT16, NANOS units, VARIANT, GEOMETRY/GEOGRAPHY) are union-only. This makes stage 13 additive to the `converted_type`-only annotations stages 6–8 already write. | Breadth | Columns read back with their logical type (STRING, DATE, TIMESTAMP, DECIMAL, …) | 6.4 (annotation) | [ ] |
 | 14 | Remaining codecs + optional delta and byte-stream-split encoders. | Breadth | Full codec / encoding choice | 2.4, 2.5 | [ ] |
 | 15 | Parallel column encoding + row-group pipelining. | Optimization | Write throughput | — | [ ] |
-| 16 | Row-oriented `ParquetWriter` ergonomic layer on the columnar core, including nested record materialization and logical-type value conversion (inverse of `LogicalTypeConverter`). | Layer | Mainstream-friendly API | 6.1 (`ParquetWriter`), 6.4 (value conversion) | [ ] |
-| 17 | User-facing documentation under `docs/content/` for the writer public API (`OutputFile`, `ParquetFileWriter`, `FileSchema.Builder`): a `how-to` guide and a `reference` page, covering the settled surface including nesting and the row-oriented layer. | Docs | Documented, stable public API | — | [ ] |
+| 16 | **Row-group-global dictionary selection**: replace the per-column-chunk optimistic build with mid-chunk `PLAIN` fallback (stage 9) with a choice made once the row group is fully buffered — each column chunk is encoded `RLE_DICTIONARY` or `PLAIN` as a whole from its true cardinality, so no chunk mixes encodings and no dictionary page is written for a chunk that ends up `PLAIN`. Trades a second encode pass and higher peak buffer occupancy for the optimal per-chunk choice; the payoff scales with the variable-width types from stage 12, where indices are far smaller than the values and the dictionary byte-limit is a poor proxy for whether encoding pays. With the whole group buffered the choice follows from the exact cardinality — and, where the byte-limit proxy is weakest, a direct comparison of the two encodings' sizes — so no predictive threshold is needed; the stage-9 streaming abort heuristic does not apply here. | Optimization | Optimal, uniform per-chunk encoding choice | 2.2 | [ ] |
+| 17 | Row-oriented `ParquetWriter` ergonomic layer on the columnar core, including nested record materialization and logical-type value conversion (inverse of `LogicalTypeConverter`). | Layer | Mainstream-friendly API | 6.1 (`ParquetWriter`), 6.4 (value conversion) | [ ] |
+| 18 | User-facing documentation under `docs/content/` for the writer public API (`OutputFile`, `ParquetFileWriter`, `FileSchema.Builder`): a `how-to` guide and a `reference` page, covering the settled surface including nesting and the row-oriented layer. | Docs | Documented, stable public API | — | [ ] |
+| 19 | S3 `OutputFile` backend: sequential multipart upload — buffer to the part size, upload parts, complete on `close()`. In-flight bytes bounded to the part size times a small concurrency multiple; lazy `CreateMultipartUpload` deferred to the first part flush, with a single `PutObject` fallback for a sub-part output. Reuses the read-side S3 / SigV4 stack. | Layer | Write directly to object storage | — | [ ] |
+| 20 | **Page index writing**: per-column-chunk OffsetIndex (page locations) and ColumnIndex (per-page `min`/`max`, null counts, boundary order), written after the row group's pages and referenced from the footer, so the reader can skip individual pages. Extends the column-chunk statistics of increment 11 to page granularity; the `DataPageHeader` inline `statistics` are the pre-index fallback covered here. Truncation and `is_*_value_exact` follow the increment 11 / 12 rules. Its own design. | Layer | Page-level pruning on produced files | 9.2 | [ ] |
+| 21 | **Bloom filter writing**: a split-block Bloom filter per eligible column chunk (XXHASH64), serialized with its header and referenced from the column metadata, for equality-predicate pruning where `min`/`max` do not help. Its own design. | Layer | Bloom-filter pruning on produced files | 9.3 | [ ] |
 
 Increments 1–4 settle the flat dimensions on `INT32`; 5–8 settle the nested shape —
 design, then struct / list / map shredding — on `INT32`; 9–11 finish the remaining
-dimensions (dictionary, compression, statistics) on the now flat-and-nested shape; 12–16
-are breadth and layers that build on the settled shape; 17 documents the finished public
-surface. Together they constitute the write-support milestone (#9). Sequenced as later
-work, each its own design and sequence: DataPage V2, the optional index structures and
-Bloom filters, the Avro write adapter, a CLI write/convert command, and the S3
-`OutputFile` backend.
+dimensions (dictionary, compression, statistics) on the now flat-and-nested shape; 12–14
+are breadth on the settled shape, 15–16 are internal encoding optimizations, and 17 is the
+row-oriented layer; 18 documents the finished public surface. Together, increments 1–18
+constitute the write-support milestone (#9); increments 19–21 add the S3 `OutputFile` backend
+and the optional index structures (page indexes and Bloom filters, with the per-page
+statistics that make page-level pruning possible) on the settled surface. Sequenced as
+separate later milestones, each its own design and sequence: DataPage V2, the Avro write
+adapter, and a CLI write/convert command.
 
 ## User documentation
 
 User-facing documentation under `docs/content/` is delivered as the closing increment
-of the milestone (stage 17), once the full public surface — including nesting and the
+of the milestone (stage 18), once the full public surface — including nesting and the
 row-oriented layer — is settled. Documenting the provisional `INT32`-only surface earlier
 would be throwaway, so deferring is a recorded, intentional exception to the CLAUDE.md
 rule that a new public API ships with a docs update — not an oversight. The public surface
 (`OutputFile`, `ParquetFileWriter`, `FileSchema.Builder`) gets its `how-to`/`reference`
-pages at stage 17.
+pages at stage 18.
 
 ## Roadmap reconciliation
 

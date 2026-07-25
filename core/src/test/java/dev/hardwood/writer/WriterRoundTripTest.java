@@ -25,14 +25,17 @@ import dev.hardwood.InputFile;
 import dev.hardwood.OutputFile;
 import dev.hardwood.Validity;
 import dev.hardwood.internal.metadata.PageHeader;
+import dev.hardwood.internal.predicate.StatisticsDecoder;
 import dev.hardwood.internal.thrift.PageHeaderReader;
 import dev.hardwood.internal.thrift.ThriftCompactReader;
 import dev.hardwood.internal.writer.ByteBufferOutputFile;
 import dev.hardwood.metadata.ColumnMetaData;
+import dev.hardwood.metadata.CompressionCodec;
 import dev.hardwood.metadata.Encoding;
 import dev.hardwood.metadata.PhysicalType;
 import dev.hardwood.metadata.RepetitionType;
 import dev.hardwood.metadata.RowGroup;
+import dev.hardwood.metadata.Statistics;
 import dev.hardwood.reader.ColumnReader;
 import dev.hardwood.reader.LayerKind;
 import dev.hardwood.reader.ParquetFileReader;
@@ -779,6 +782,227 @@ class WriterRoundTripTest {
                 assertThat(readMapOfInts(kr, vr)).containsExactly(
                         mapOf(1, 5, 2, null), Map.of(), null, mapOf(3, 5, 4, 9));
             }
+        }
+    }
+
+    @Test
+    void compressesPagesWithZstdByDefault() throws Exception {
+        // The default codec is ZSTD, so a file written with no override records ZSTD and reads
+        // back through the reader's ZSTD path.
+        int[] values = new int[1_000];
+        int[] palette = { 3, 3, 7, 3, 9 };
+        for (int i = 0; i < values.length; i++) {
+            values[i] = palette[i % palette.length];
+        }
+
+        ByteBufferOutputFile out = new ByteBufferOutputFile();
+        try (ParquetFileWriter writer = ParquetFileWriter.create(out, oneColumn())) {
+            writer.writeBatch(batch -> batch.ints(0, values));
+        }
+
+        try (ParquetFileReader reader = ParquetFileReader.open(InputFile.of(ByteBuffer.wrap(out.toByteArray())))) {
+            assertThat(columnMeta(reader, 0).codec()).isEqualTo(CompressionCodec.ZSTD);
+            assertThat(Arrays.equals(readInts(reader, 0), values)).isTrue();
+        }
+    }
+
+    @Test
+    void zstdShrinksACompressiblePageAndAccountsForBothSizes() throws Exception {
+        // A large single-valued PLAIN column (dictionary disabled) has a highly compressible
+        // body, so ZSTD stores far fewer bytes than it holds — proving the compress step ran
+        // and that the compressed and uncompressed sizes are tracked independently, at both the
+        // chunk-metadata and the page-header level.
+        int n = 10_000;
+        int[] values = new int[n];
+        Arrays.fill(values, 42);
+
+        WriterConfig config = WriterConfig.builder().enableDictionary(false).build();
+        ByteBufferOutputFile out = new ByteBufferOutputFile();
+        try (ParquetFileWriter writer = ParquetFileWriter.create(out, oneColumn(), config)) {
+            writer.writeBatch(batch -> batch.ints(0, values));
+        }
+        byte[] bytes = out.toByteArray();
+
+        try (ParquetFileReader reader = ParquetFileReader.open(InputFile.of(ByteBuffer.wrap(bytes)))) {
+            ColumnMetaData meta = columnMeta(reader, 0);
+            assertThat(meta.codec()).isEqualTo(CompressionCodec.ZSTD);
+            assertThat(meta.totalCompressedSize()).isLessThan(meta.totalUncompressedSize());
+
+            int offset = Math.toIntExact(meta.dataPageOffset());
+            ThriftCompactReader thrift = new ThriftCompactReader(ByteBuffer.wrap(bytes), offset);
+            PageHeader header = PageHeaderReader.read(thrift);
+            assertThat(header.compressedPageSize()).isLessThan(header.uncompressedPageSize());
+            // The CRC covers the stored (compressed) bytes.
+            int bodyStart = offset + thrift.getBytesRead();
+            CRC32 crc = new CRC32();
+            crc.update(bytes, bodyStart, header.compressedPageSize());
+            assertThat(header.crc().intValue()).isEqualTo((int) crc.getValue());
+
+            assertThat(Arrays.equals(readInts(reader, 0), values)).isTrue();
+        }
+    }
+
+    @Test
+    void uncompressedCodecStoresBodiesVerbatim() throws Exception {
+        // With the UNCOMPRESSED codec the stored bytes are the body bytes, so the chunk's
+        // compressed and uncompressed sizes are equal.
+        int[] values = { 1, 2, 3, 4, 5 };
+
+        WriterConfig config = WriterConfig.builder().codec(CompressionCodec.UNCOMPRESSED).build();
+        ByteBufferOutputFile out = new ByteBufferOutputFile();
+        try (ParquetFileWriter writer = ParquetFileWriter.create(out, oneColumn(), config)) {
+            writer.writeBatch(batch -> batch.ints(0, values));
+        }
+
+        try (ParquetFileReader reader = ParquetFileReader.open(InputFile.of(ByteBuffer.wrap(out.toByteArray())))) {
+            ColumnMetaData meta = columnMeta(reader, 0);
+            assertThat(meta.codec()).isEqualTo(CompressionCodec.UNCOMPRESSED);
+            assertThat(meta.totalCompressedSize()).isEqualTo(meta.totalUncompressedSize());
+            assertThat(readInts(reader, 0)).containsExactly(values);
+        }
+    }
+
+    @Test
+    void compressionComposesWithNullsAcrossPages() throws Exception {
+        // ZSTD compression under a tiny page target: many compressed pages, each carrying a
+        // def-level stream and PLAIN values, must all decompress and reassemble the nulls.
+        int n = 4_000;
+        int[] values = new int[n];
+        boolean[] nulls = new boolean[n];
+        for (int i = 0; i < n; i++) {
+            values[i] = i;
+            nulls[i] = i % 4 == 0;
+        }
+
+        WriterConfig config = WriterConfig.builder().pageTargetBytes(256).build();
+        ByteBufferOutputFile out = new ByteBufferOutputFile();
+        try (ParquetFileWriter writer = ParquetFileWriter.create(out, oneOptionalColumn(), config)) {
+            writer.writeBatch(batch -> batch.ints(0, values, nulls));
+        }
+
+        try (ParquetFileReader reader = ParquetFileReader.open(InputFile.of(ByteBuffer.wrap(out.toByteArray())))) {
+            assertThat(columnMeta(reader, 0).codec()).isEqualTo(CompressionCodec.ZSTD);
+            assertThat(readNullable(reader, 0)).isEqualTo(expectedNullable(values, nulls));
+        }
+    }
+
+    @Test
+    void writesMinMaxAndNullCountForRequiredColumn() throws Exception {
+        // Signed bounds: the extremes must sort as MIN < ... < MAX, matching the INT32
+        // type-defined (signed) ColumnOrder.
+        int[] values = { 42, -100_000, 7, Integer.MAX_VALUE, Integer.MIN_VALUE, 0 };
+
+        ByteBufferOutputFile out = new ByteBufferOutputFile();
+        try (ParquetFileWriter writer = ParquetFileWriter.create(out, oneColumn())) {
+            writer.writeBatch(batch -> batch.ints(0, values));
+        }
+
+        try (ParquetFileReader reader = ParquetFileReader.open(InputFile.of(ByteBuffer.wrap(out.toByteArray())))) {
+            Statistics stats = columnMeta(reader, 0).statistics();
+            assertThat(stats).as("statistics written").isNotNull();
+            assertThat(StatisticsDecoder.decodeInt(stats.minValue())).isEqualTo(Integer.MIN_VALUE);
+            assertThat(StatisticsDecoder.decodeInt(stats.maxValue())).isEqualTo(Integer.MAX_VALUE);
+            assertThat(stats.nullCount()).isEqualTo(0L);
+            // Written through the preferred min_value/max_value fields, not the deprecated ones.
+            assertThat(stats.isMinMaxDeprecated()).isFalse();
+        }
+    }
+
+    @Test
+    void boundsSpanOnlyPresentValuesAndNullsAreCounted() throws Exception {
+        // The three null rows are counted but never widen the bounds, which cover 7..50.
+        int[] values = { 7, 0, -3, 0, 50, 0, 20 };
+        boolean[] nulls = { false, true, false, true, false, true, false };
+
+        ByteBufferOutputFile out = new ByteBufferOutputFile();
+        try (ParquetFileWriter writer = ParquetFileWriter.create(out, oneOptionalColumn())) {
+            writer.writeBatch(batch -> batch.ints(0, values, nulls));
+        }
+
+        try (ParquetFileReader reader = ParquetFileReader.open(InputFile.of(ByteBuffer.wrap(out.toByteArray())))) {
+            Statistics stats = columnMeta(reader, 0).statistics();
+            assertThat(StatisticsDecoder.decodeInt(stats.minValue())).isEqualTo(-3);
+            assertThat(StatisticsDecoder.decodeInt(stats.maxValue())).isEqualTo(50);
+            assertThat(stats.nullCount()).isEqualTo(3L);
+        }
+    }
+
+    @Test
+    void allNullColumnWritesNullCountButNoBounds() throws Exception {
+        // No present value, so the chunk carries a null count but omits min/max.
+        boolean[] nulls = { true, true, true, true };
+        int[] values = new int[nulls.length];
+
+        ByteBufferOutputFile out = new ByteBufferOutputFile();
+        try (ParquetFileWriter writer = ParquetFileWriter.create(out, oneOptionalColumn())) {
+            writer.writeBatch(batch -> batch.ints(0, values, nulls));
+        }
+
+        try (ParquetFileReader reader = ParquetFileReader.open(InputFile.of(ByteBuffer.wrap(out.toByteArray())))) {
+            Statistics stats = columnMeta(reader, 0).statistics();
+            assertThat(stats).isNotNull();
+            assertThat(stats.minValue()).isNull();
+            assertThat(stats.maxValue()).isNull();
+            assertThat(stats.nullCount()).isEqualTo(4L);
+        }
+    }
+
+    @Test
+    void eachRowGroupCarriesItsOwnStatistics() throws Exception {
+        // Ascending values with a 4 KiB row-group target (1024 rows per group): each chunk's
+        // bounds cover only its own slice, so they advance group by group.
+        int n = 5_000;
+        int[] values = new int[n];
+        for (int i = 0; i < n; i++) {
+            values[i] = i;
+        }
+
+        WriterConfig config = WriterConfig.builder().rowGroupTargetBytes(4096).build();
+        ByteBufferOutputFile out = new ByteBufferOutputFile();
+        try (ParquetFileWriter writer = ParquetFileWriter.create(out, oneColumn(), config)) {
+            writer.writeBatch(batch -> batch.ints(0, values));
+        }
+
+        try (ParquetFileReader reader = ParquetFileReader.open(InputFile.of(ByteBuffer.wrap(out.toByteArray())))) {
+            List<RowGroup> groups = reader.getFileMetaData().rowGroups();
+            assertThat(groups.size()).isGreaterThan(1);
+            Statistics first = groups.get(0).columns().get(0).metaData().statistics();
+            assertThat(StatisticsDecoder.decodeInt(first.minValue())).isEqualTo(0);
+            assertThat(StatisticsDecoder.decodeInt(first.maxValue())).isEqualTo(1023);
+            Statistics second = groups.get(1).columns().get(0).metaData().statistics();
+            assertThat(StatisticsDecoder.decodeInt(second.minValue())).isEqualTo(1024);
+            assertThat(StatisticsDecoder.decodeInt(second.maxValue())).isEqualTo(2047);
+        }
+    }
+
+    @Test
+    void listColumnNullCountCountsNullAndEmptyLists() throws Exception {
+        // The leaf's null count spans every not-present slot — a null list, an empty list, and
+        // a null element — while the bounds cover only the present elements 1..5.
+        // record 0: [1,2]; 1: [] (empty); 2: null list; 3: [3, null, 5].
+        FileSchema schema = FileSchema.builder("schema")
+                .list("phones", RepetitionType.OPTIONAL, el -> el.primitive(PhysicalType.INT32, RepetitionType.OPTIONAL))
+                .build();
+
+        int[] offsets = { 0, 2, 2, 2, 5 };
+        Validity listNulls = Validity.ofNulls(new boolean[] { false, false, true, false });
+        int[] elements = { 1, 2, 3, 0, 5 };
+        boolean[] elementNulls = { false, false, false, true, false };
+
+        ByteBufferOutputFile out = new ByteBufferOutputFile();
+        try (ParquetFileWriter writer = ParquetFileWriter.create(out, schema)) {
+            writer.writeBatch(batch -> batch
+                    .list("phones", offsets, listNulls)
+                    .ints("phones.list.element", elements, elementNulls));
+        }
+
+        try (ParquetFileReader reader = ParquetFileReader.open(InputFile.of(ByteBuffer.wrap(out.toByteArray())))) {
+            int leaf = reader.getFileSchema().getColumn("phones.list.element").columnIndex();
+            Statistics stats = columnMeta(reader, leaf).statistics();
+            assertThat(StatisticsDecoder.decodeInt(stats.minValue())).isEqualTo(1);
+            assertThat(StatisticsDecoder.decodeInt(stats.maxValue())).isEqualTo(5);
+            // 1 empty list + 1 null list + 1 null element.
+            assertThat(stats.nullCount()).isEqualTo(3L);
         }
     }
 
