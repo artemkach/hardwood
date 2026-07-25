@@ -580,7 +580,14 @@ public class RowGroupIterator {
         coalesceAcrossColumns(plans, inputFile, workItem);
 
         if (captureContext != null) {
-            publishCapture(plans, workItem);
+            // Anything cut short by filtering, row masks, or maxRows is an
+            // execution-resolved record, not a timing-independent static plan
+            // — the v0 contract seals such plans INCOMPLETE. `matchingRows`
+            // already reflects the tail-skip synthesis above.
+            boolean truncated = filterPredicate != null
+                    || !matchingRows.isAll()
+                    || perRgMaxRows > 0;
+            publishCapture(plans, workItem, truncated);
         }
 
         return plans;
@@ -598,10 +605,12 @@ public class RowGroupIterator {
     /// first read is not statically known (page drops, `head(N)` truncation,
     /// lazy sequential discovery) is sealed `INCOMPLETE` rather than exported
     /// as a complete DAG.
-    private void publishCapture(FetchPlan[] plans, WorkItem workItem) {
+    private void publishCapture(FetchPlan[] plans, WorkItem workItem, boolean truncated) {
         CaptureContext.PlanScope scope = captureContext.newPlan(workItem.workItemIndex());
-        boolean anyUnsupported = false;
-        String reason = "";
+        boolean anyUnsupported = truncated;
+        String reason = truncated
+                ? "filter, row mask, or maxRows truncation makes first reads execution-resolved"
+                : "";
 
         // Group plans by their attached SharedRegion so a fused region becomes
         // one node carrying every member column's requirement. Regions are

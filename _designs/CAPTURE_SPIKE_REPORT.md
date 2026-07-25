@@ -1,10 +1,12 @@
 # Plan-Capture Spike: JFR vs Custom Observer
 
-**Status:** spike complete — feasibility answers, not shipping interfaces.
-**Branch:** `capture`. **Build:** `./mvnw clean verify` green (575 tests, all
-Error Prone / license / spotless gates pass).
+**Status:** spike items (a), (b), and (d) complete — feasibility answers, not
+shipping interfaces. Item (c) (transport: S3Proxy/Toxiproxy verification) is
+deferred as the least self-contained piece.
+**Branch:** `capture`. **Build:** `./mvnw clean verify` green (all Error
+Prone / license / spotless gates pass).
 **Scope source:** [perf-sandbox-2.md](../../hardwood-research/docs/research/perf-sandbox-2.md)
-§2 spike contract (a), §4.2 capture-mechanism go/no-go, §B.5 build order.
+§2 spike contract, §4.2 capture-mechanism go/no-go, §4.3 scorer, §B.5 build order.
 
 This spike prototyped **both** capture mechanisms the research doc names — the
 JFR causal events (the declared first choice) and the custom in-memory observer
@@ -163,12 +165,93 @@ only lowers upstream friction.
 
 ---
 
-## 5. What is explicitly NOT in this spike
+## 5. Spike item (b): lazy sequential identity with split and fused conformance
+
+The deliverable: prove how a structured request ID reaches the first
+standalone `ChunkHandle` an uncoalesced `SequentialFetchPlan` creates later in
+`advanceChunk()`, with split **and** fused conformance tests.
+
+**Answer: store the post-coalescing identity on the plan; stamp the handle at
+creation.** `SequentialFetchPlan.setFirstReadCapture(...)` stashes the
+`CaptureContext` + `NodeIdentity`; `advanceChunk(0)` stamps them onto the
+handle it creates when (and only when) the first read is standalone. The
+region-backed (fused) case carries identity on the `SharedRegion` instead.
+
+Conformance is checked by **two independent witnesses** per shape
+(`SplitVersusFusedConformanceTest`):
+
+1. **Execution-seal reconciliation** — the capture's own attempt records must
+   match the sealed count and order-independent hash (extraction throws
+   otherwise).
+2. **`TracingInputFile` one-to-one matching** — an independent trace at the
+   `InputFile` seam (generalizing `CountingInputFile` from counts to
+   `(offset, length)` records) is matched one-to-one against the plan's final
+   nodes by `PlanConformance.matchOneToOne`: every node executed exactly once
+   with its exact range, no duplicates. The only unmatched reads are the three
+   local metadata-stage footer reads, asserted exactly — the v0 data-stage
+   plan does not model the metadata stage, and the fixture bounds it.
+
+Results, on identical fixture bytes (the 20-column sequential file, gap knob
+as the only difference):
+
+- **fused** (default 64 KB gap): 1 node, N requirements, one-to-one conformant;
+- **split** (negative gap override): N nodes, one requirement each, one-to-one
+  conformant — the lazily created standalone handles all carried their IDs;
+- **identical useful bytes** across both contenders (and zero dead bytes in
+  the fused node for this back-to-back fixture);
+- **truncated plans seal `INCOMPLETE`**: a page-dropping filter (and, more
+  broadly, any filter / row-mask / `maxRows` truncation) marks the plan
+  execution-resolved rather than exporting it as a complete static DAG. This
+  hardened a real gap the test found: the original publication logic only
+  looked at per-plan coalesce-safety and would have sealed a
+  filter-truncated-but-single-page-group plan `SUPPORTED`.
+
+## 6. Spike item (d): scorer arithmetic unit tests (pure, zero Hardwood coupling)
+
+`dev.hardwood.scorer` (test-scope, three ~100-line files): `ScoredPlan`
+(nodes + edges, eager validation: duplicate IDs, dangling edges, self-edges,
+cycles via Kahn's algorithm), `CostModel`
+(`latency + ceilDiv(bytes * 1e9, bytesPerSecond)`, overflow-checked, invalid
+parameters rejected), `PlanScorer` (the A.5 discrete-event loop: start what's
+ready under the concurrency cap, jump the clock to the next completion, batch
+simultaneous completions, ready queue in stable-ID order — declared as an
+arbitrary fixed modeled policy).
+
+The 22 tests in `PlanScorerTest` encode, pencil-verifiable:
+
+- **The doc's worked example exactly**: fused ≈ 74 ms, split-parallel = 50 ms
+  (exact), split-serial = 100 ms (exact) at L = 30 ms, B = 50 MiB/s — the
+  `parallel < fused < serial` ordering of §3.1.
+- **The serial break-even boundary** `g* = L × B = 1,572,864` bytes: fusion
+  wins one byte below, exact tie at the boundary, splitting wins one byte
+  above — the three boundary tests §4.3 mandates.
+- **The conditionality of the break-even**: under 2 free connections,
+  splitting beats fusion at *any* gap, including zero.
+- **§4.3's invalid-inference counterexample verified numerically**: plans
+  X `[6,6,6,2]` / Y `[8,3,8,3]` — X wins at both endpoints (20 vs 22 serial,
+  6 vs 8 ideal) and loses at concurrency 2 (12 vs 11). Endpoint rankings do
+  not bound intermediate concurrency; the scorer computes intermediate cells.
+- **Dependency scheduling**: chains serialize regardless of concurrency;
+  diamonds join at the slower branch; simultaneous completions batch before
+  new starts.
+- **Fail-early validation**: cyclic/self-edge/dangling/duplicate plans and
+  invalid model parameters are rejected; a clock overflow throws
+  `ArithmeticException` rather than wrapping into a small positive score.
+
+The scorer has zero imports from any `dev.hardwood` package outside its own —
+`(plan, model) → nanos`, no threads, no sleeping, deterministic.
+
+## 7. What is explicitly NOT in this spike
 
 Per §B.5 ("feasibility answers, not interfaces") and §12's exclusions:
 
-- **No scorer** — deliberately out of the capture spike (it is a separate,
-  pure, hand-testable deliverable). `StaticFetchPlan` is shaped to feed it.
+- **Item (c), transport** — S3Proxy latency-middleware / throttle verification
+  on the pinned image, Toxiproxy digest selection, and the three smoke checks
+  are deferred: they need containers and are the least self-contained piece.
+- **No `StaticFetchPlan` → `ScoredPlan` bridge** — deliberately: the scorer's
+  purity (zero Hardwood coupling) is the spike property under test. The
+  bridge is a trivial mapping (nodes have IDs and lengths in both) and
+  belongs to the agreed implementation scope.
 - **No canonical JSON serialization on disk** — `StaticFetchPlan` is
   reconstructed in-memory; persistence across isolated contender JVMs is
   implementation-scope for the agreed design, not a feasibility question.
@@ -176,21 +259,22 @@ Per §B.5 ("feasibility answers, not interfaces") and §12's exclusions:
 - **No multi-row-group / prefetch-chain / retry capture** — v0 is
   single-plan, statically-known first reads; the async-planning-publisher
   tracking for the general case is named future work.
-- **No lane-2 transport, calibration, or flagship table** — separate spike
-  deliverables (c) and beyond.
-- **`StaticFetchPlan` / capture types are all `internal`** — no supported
-  public API added, honoring the minimal-surface rule.
+- **No aggregate-bandwidth term** — the `CostModel` documents its absence;
+  results derived from it must state that.
+- **`StaticFetchPlan` / capture types are all `internal`; scorer types are
+  test-scope** — no supported public API added.
 
 ---
 
-## 6. Test inventory
+## 8. Test inventory
 
 | Test | Proves |
 |---|---|
 | `PlanExtractorLossTest` (13) | Loss/mutation/duplicate/unplanned detection; order-independent hash; schema/manifest checks — mechanism-independent. |
 | `ObserverCaptureEndToEndTest` (3) | Real-planner reconstruction (fused + indexed), concurrent-reader isolation. |
 | `JfrCaptureRoundTripTest` (2) | JFR dump→parse→extract reconstructs exactly; disabled family emits nothing. |
-| `SplitVersusFusedConformanceTest` (2) | Lazy-sequential identity holds in both plan shapes via the gap override. |
+| `SplitVersusFusedConformanceTest` (4) | Lazy-sequential identity in both plan shapes via the gap override, with one-to-one `TracingInputFile` conformance; identical useful bytes across contenders; filter truncation seals `INCOMPLETE`. |
+| `PlanScorerTest` (22) | Scorer arithmetic: worked 74/50/100 ms example, `g* = L × B` boundary triple, conditional break-even, intermediate-concurrency counterexample, dependency/tie policies, fail-early validation. |
 | `DisabledPathOverheadTest` (1) | Coarse disabled-path guard; prints indicative overhead. |
 | `CaptureOverheadBenchmark` (JMH) | The authoritative four-configuration equivalence gate (run on a fixed host). |
 
