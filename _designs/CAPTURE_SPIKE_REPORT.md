@@ -1,12 +1,13 @@
 # Plan-Capture Spike: JFR vs Custom Observer
 
-**Status:** spike items (a), (b), and (d) complete — feasibility answers, not
-shipping interfaces. Item (c) (transport: S3Proxy/Toxiproxy verification) is
-deferred as the least self-contained piece.
+**Status:** all four spike items — (a) capture mechanism, (b) lazy sequential
+identity, (c) transport, (d) scorer arithmetic — complete. Feasibility
+answers, not shipping interfaces.
 **Branch:** `capture`. **Build:** `./mvnw clean verify` green (all Error
 Prone / license / spotless gates pass).
 **Scope source:** [perf-sandbox-2.md](../../hardwood-research/docs/research/perf-sandbox-2.md)
-§2 spike contract, §4.2 capture-mechanism go/no-go, §4.3 scorer, §B.5 build order.
+§2 spike contract, §4.2 capture-mechanism go/no-go, §4.3 scorer, §5.2
+transport, §B.5 build order.
 
 This spike prototyped **both** capture mechanisms the research doc names — the
 JFR causal events (the declared first choice) and the custom in-memory observer
@@ -241,13 +242,72 @@ The 22 tests in `PlanScorerTest` encode, pencil-verifiable:
 The scorer has zero imports from any `dev.hardwood` package outside its own —
 `(plan, model) → nanos`, no threads, no sleeping, deterministic.
 
-## 7. What is explicitly NOT in this spike
+## 7. Spike item (c): transport — verified on the pinned images
+
+The deliverable: confirm the S3Proxy latency middleware works and its stream
+throttle does not (both claims were source-based until now — §5.2 required
+confirmation "on the actual pinned image"), select a Toxiproxy digest, and run
+the three smoke checks. All done in
+`TransportImpairmentSpikeTest` (s3 module, Testcontainers), plus ad-hoc
+container runs during development. Findings:
+
+1. **Latency middleware works on the pinned image** (`6597ca59`, via
+   `ghcr.io/hardwood-hq/s3proxy`). `S3PROXY_JAVA_OPTS=-Ds3proxy.latency-blobstore.get.latency=300`
+   activates `LatencyBlobStore` ("Using latency storage backend" in the log)
+   and adds the configured delay: ad-hoc runs measured ~512–597 ms total for
+   a GET whose baseline is ~92 ms. One precision over the research doc: the
+   activating property key is `s3proxy.latency-blobstore.<op>.latency` and
+   the GET operation name is **`get`**, confirmed from the pinned jar's
+   bytecode (`PROPERTIES_LATENCY_RE`, op-name constants).
+2. **The stream throttle is defective at realistic rates, exactly as
+   analyzed.** With `s3proxy.latency-blobstore.get.speed=52429` (≈50 MiB/s in
+   bytes-per-ms terms), a GET fails outright with **HTTP 400 "nanosecond
+   timeout value out of range"** — the `ThrottledInputStream`
+   `Thread.sleep(size/speed, (size % speed) * 1_000_000)` overflow, visible
+   in the pinned jar's bytecode (`imul` by 1_000_000 into the nanos
+   argument). It fails identically at `speed=1000`; the throttle cannot
+   supply lane 1's `B` at any realistic setting. Confirmed, not just
+   source-inferred: this is why Toxiproxy is required.
+3. **Toxiproxy digest selected**:
+   `ghcr.io/shopify/toxiproxy@sha256:9378ed52a28bc50edc1350f936f518f31fa95f0d15917d6eb40b8e376d1a214e`
+   (v2.12.0 — the version eval-3's toxic-pipeline analysis examined).
+   Recorded in the test as the pinned constant; mirroring via `s3proxy-mirror`
+   is proposed only if it becomes durable CI infrastructure.
+4. **Latency smoke check: pass.** A downstream latency toxic (300 ms,
+   jitter 0) added ~297 ms over the plain-proxy control (16.6 ms → 313.9 ms
+   ad-hoc; the test asserts > 200 ms added).
+5. **Bandwidth smoke check: pass, and notably precise.** A downstream
+   bandwidth toxic at 1024 KB/s moved a 2 MiB object in 2.052 s at a
+   measured 1,022,028 B/s — within 0.2% of the configured rate at this size.
+   (No generalization to other sizes/rates — that is what per-profile
+   calibration is for.)
+6. **Two-connection overlap check: pass — the bandwidth toxic is
+   per-connection**, as §5.2's units warning states. Two concurrent GETs on
+   separate connections each completed in ~2.05 s (the solo duration, i.e.
+   each got the full per-connection rate) while the serial control took
+   4.13 s. Concurrent wall clock ≈ solo duration confirms genuine overlap
+   with no aggregate cap — the sandbox's independent-per-connection-bandwidth
+   assumption holds on this stack, and an aggregate cap, if ever wanted,
+   must be modeled elsewhere.
+
+Environment notes for whoever picks this up next: container-to-container
+networking (Toxiproxy → S3Proxy over a shared Testcontainers `Network`) works
+in this dev container's socket-proxy Docker setup; the Toxiproxy REST API is
+driven with `java.net.http.HttpClient` directly, avoiding a `toxiproxy-java`
+dependency; the smoke checks use anonymous S3Proxy (`S3PROXY_AUTHORIZATION=none`)
+and plain HTTP GETs because they characterize the impairment layers, not the
+`S3InputFile` stack (which lane 2 proper will put in the loop). The pinned
+Toxiproxy image has no `/bin/sh`, so Testcontainers' default internal port
+check logs a warning before the API becomes reachable — harmless.
+
+## 8. What is explicitly NOT in this spike
 
 Per §B.5 ("feasibility answers, not interfaces") and §12's exclusions:
 
-- **Item (c), transport** — S3Proxy latency-middleware / throttle verification
-  on the pinned image, Toxiproxy digest selection, and the three smoke checks
-  are deferred: they need containers and are the least self-contained piece.
+- **No per-profile calibration** — the smoke checks verify the impairment
+  layers function and have the documented semantics; fitted `(L_eff, B_eff)`
+  with predeclared residuals, warm/cold separation, and frozen tolerances
+  wait for the agreed scope (§5.2's calibration protocol).
 - **No `StaticFetchPlan` → `ScoredPlan` bridge** — deliberately: the scorer's
   purity (zero Hardwood coupling) is the spike property under test. The
   bridge is a trivial mapping (nodes have IDs and lengths in both) and
@@ -266,7 +326,7 @@ Per §B.5 ("feasibility answers, not interfaces") and §12's exclusions:
 
 ---
 
-## 8. Test inventory
+## 9. Test inventory
 
 | Test | Proves |
 |---|---|
@@ -276,6 +336,7 @@ Per §B.5 ("feasibility answers, not interfaces") and §12's exclusions:
 | `SplitVersusFusedConformanceTest` (4) | Lazy-sequential identity in both plan shapes via the gap override, with one-to-one `TracingInputFile` conformance; identical useful bytes across contenders; filter truncation seals `INCOMPLETE`. |
 | `PlanScorerTest` (22) | Scorer arithmetic: worked 74/50/100 ms example, `g* = L × B` boundary triple, conditional break-even, intermediate-concurrency counterexample, dependency/tie policies, fail-early validation. |
 | `DisabledPathOverheadTest` (1) | Coarse disabled-path guard; prints indicative overhead. |
+| `TransportImpairmentSpikeTest` (5) | Pinned-image latency middleware works; throttle defective (HTTP 400 nanosecond overflow); Toxiproxy latency/bandwidth/two-connection-overlap smoke checks. |
 | `CaptureOverheadBenchmark` (JMH) | The authoritative four-configuration equivalence gate (run on a fixed host). |
 
 All pass in `./mvnw clean verify`.
