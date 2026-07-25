@@ -395,6 +395,7 @@
                     <exclude>**/__pycache__/**</exclude>
                     <exclude>.release-env</exclude>
                     <exclude>LICENSE.txt</exclude>
+                    <exclude>etc/license.txt</exclude>
                     <exclude>etc/license-cc-by-sa.txt</exclude>
                     <exclude>**/.jfr</exclude>
                     <exclude>**/.dontdelete</exclude>
