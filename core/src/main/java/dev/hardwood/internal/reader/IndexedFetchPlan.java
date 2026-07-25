@@ -16,6 +16,8 @@ import java.util.NoSuchElementException;
 import java.util.concurrent.CompletableFuture;
 
 import dev.hardwood.internal.FetchReason;
+import dev.hardwood.internal.capture.CaptureContext;
+import dev.hardwood.internal.capture.NodeIdentity;
 import dev.hardwood.jfr.RowGroupScannedEvent;
 import dev.hardwood.metadata.ColumnChunk;
 import dev.hardwood.metadata.ColumnMetaData;
@@ -38,6 +40,10 @@ final class IndexedFetchPlan implements FetchPlan, RowGroupIterator.CoalescableF
     private final HardwoodContextImpl context;
     private final int rowGroupIndex;
     private final String fileName;
+
+    /// Set by [#attachSharedRegion] when cross-column coalescing fuses this
+    /// column's first read into a region; `null` for a standalone first read.
+    private SharedRegion attachedRegion;
 
     private IndexedFetchPlan(List<RowGroupIterator.NeededPage> neededPages,
                               List<RowGroupIterator.PageGroup> pageGroups,
@@ -101,10 +107,23 @@ final class IndexedFetchPlan implements FetchPlan, RowGroupIterator.CoalescableF
     /// chunks produced multiple groups) keep their per-column reads —
     /// cross-column coalescing only spans the first read of each column.
     @Override
+    public SharedRegion attachedRegion() {
+        return attachedRegion;
+    }
+
+    @Override
+    public void setFirstReadCapture(CaptureContext context, NodeIdentity identity) {
+        if (!chunkHandles.isEmpty()) {
+            chunkHandles.get(0).setCapture(context, identity);
+        }
+    }
+
+    @Override
     public void attachSharedRegion(SharedRegion region, int rowGroupIndex) {
         if (chunkHandles.isEmpty()) {
             return;
         }
+        this.attachedRegion = region;
         ChunkHandle original = chunkHandles.get(0);
         ChunkHandle replacement = new ChunkHandle(region,
                 original.fileOffset(), original.length(),

@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -22,6 +23,10 @@ import java.util.concurrent.atomic.AtomicIntegerArray;
 import dev.hardwood.InputFile;
 import dev.hardwood.internal.ExceptionContext;
 import dev.hardwood.internal.FetchReason;
+import dev.hardwood.internal.capture.CaptureContext;
+import dev.hardwood.internal.capture.CaptureControl;
+import dev.hardwood.internal.capture.CaptureSchema;
+import dev.hardwood.internal.capture.NodeIdentity;
 import dev.hardwood.internal.metadata.PageHeader;
 import dev.hardwood.internal.predicate.PageDropPredicates;
 import dev.hardwood.internal.predicate.PageFilterEvaluator;
@@ -75,6 +80,11 @@ public class RowGroupIterator {
     private final HardwoodContextImpl context;
     private final long maxRows;
     private final long physicalSkip;
+
+    /// Per-execution plan-capture context, consumed at construction from the
+    /// installing (build) thread. `null` when capture is disabled — the common
+    /// case — in which case no capture work happens anywhere on the read path.
+    private final CaptureContext captureContext;
 
     /// Number of leading rows of the first row group to skip. Non-zero only on
     /// the tail-read fast path; consumed by [#computeFetchPlans] to synthesize
@@ -214,6 +224,11 @@ public class RowGroupIterator {
         this.maxRows = maxRows;
         this.tailSkip = tailSkip;
         this.physicalSkip = physicalSkip;
+        // Consume any pending capture context from the installing (build)
+        // thread. This is the only thread-local read on the path; from here
+        // on the context lives by reference on this iterator, surviving the
+        // async plan-construction and request-execution hand-offs.
+        this.captureContext = CaptureControl.pending();
     }
 
     /// Returns the maximum rows limit (0 = unlimited).
@@ -564,14 +579,99 @@ public class RowGroupIterator {
 
         coalesceAcrossColumns(plans, inputFile, workItem);
 
+        if (captureContext != null) {
+            publishCapture(plans, workItem);
+        }
+
         return plans;
     }
 
-    /// Maximum byte gap that cross-column coalescing will bridge between
-    /// adjacent column chunks. Adjacent chunks are typically 0 bytes apart,
-    /// but writers may emit padding / checksum bytes; 64 KB tolerates that
-    /// without paying for sizeable dead bytes between non-adjacent chunks.
-    private static final int MAX_CROSS_COL_GAP_BYTES = 64 * 1024;
+    /// Publishes the final post-coalescing request nodes for one row group's
+    /// plan into the capture context — the plan-publication quiescence point,
+    /// after [#coalesceAcrossColumns] has replaced fused columns' first
+    /// handles with region-backed views.
+    ///
+    /// v0 contract: one first-read *requirement* per non-empty projected
+    /// column, materialized into one or more final request *nodes*. A fused
+    /// [SharedRegion] is one node carrying N requirements; a standalone
+    /// coalesce-safe first read is one node with one requirement. A plan whose
+    /// first read is not statically known (page drops, `head(N)` truncation,
+    /// lazy sequential discovery) is sealed `INCOMPLETE` rather than exported
+    /// as a complete DAG.
+    private void publishCapture(FetchPlan[] plans, WorkItem workItem) {
+        CaptureContext.PlanScope scope = captureContext.newPlan(workItem.workItemIndex());
+        boolean anyUnsupported = false;
+        String reason = "";
+
+        // Group plans by their attached SharedRegion so a fused region becomes
+        // one node carrying every member column's requirement. Regions are
+        // reference-identity keyed; standalone plans key to themselves.
+        Map<SharedRegion, NodeIdentity> regionNodes = new IdentityHashMap<>();
+
+        for (int i = 0; i < plans.length; i++) {
+            FetchPlan plan = plans[i];
+            if (plan.isEmpty()) {
+                continue;
+            }
+            if (!(plan instanceof CoalescableFirstChunk c)) {
+                anyUnsupported = true;
+                reason = "non-coalescable plan for projected column " + i;
+                continue;
+            }
+            long offset = c.firstChunkOffset();
+            int length = c.firstChunkLength();
+            SharedRegion region = c.attachedRegion();
+            if (region != null) {
+                NodeIdentity node = regionNodes.get(region);
+                if (node == null) {
+                    node = scope.node(region.fileOffset(), region.length(),
+                            CaptureSchema.STAGE_DATA, "rg" + workItem.rowGroupIndex() + "/fused");
+                    regionNodes.put(region, node);
+                    region.setCapture(captureContext, node);
+                }
+                scope.requirement(node.nodeId(), offset, length,
+                        CaptureSchema.ROLE_COLUMN_FIRST_READ);
+            }
+            else if (c.isCoalesceSafe()) {
+                NodeIdentity node = scope.node(offset, length,
+                        CaptureSchema.STAGE_DATA,
+                        "rg" + workItem.rowGroupIndex() + "/col" + i);
+                scope.requirement(node.nodeId(), offset, length,
+                        CaptureSchema.ROLE_COLUMN_FIRST_READ);
+                c.setFirstReadCapture(captureContext, node);
+            }
+            else {
+                // First read is not the whole column (page drops or head(N)
+                // truncation) — an execution-resolved plan, not a static one.
+                anyUnsupported = true;
+                reason = "projected column " + i + " has a non-static first read";
+            }
+        }
+
+        scope.seal(anyUnsupported ? CaptureSchema.STATUS_INCOMPLETE : CaptureSchema.STATUS_SUPPORTED,
+                anyUnsupported ? reason : "");
+    }
+
+    /// Default maximum byte gap that cross-column coalescing will bridge
+    /// between adjacent column chunks. Adjacent chunks are typically 0 bytes
+    /// apart, but writers may emit padding / checksum bytes; 64 KB tolerates
+    /// that without paying for sizeable dead bytes between non-adjacent chunks.
+    private static final int DEFAULT_MAX_CROSS_COL_GAP_BYTES = 64 * 1024;
+
+    /// System-property key for overriding [#maxCrossColGapBytes], matching the
+    /// two sibling planner knobs (`hardwood.internal.maxCoalescedBytes`,
+    /// `hardwood.internal.sequentialChunkSize`).
+    private static final String MAX_CROSS_COL_GAP_PROPERTY = "hardwood.internal.maxCrossColGapBytes";
+
+    /// The gap this iterator's coalescing uses, read once per construction from
+    /// the override property (default 64 KB). Reading it per instance rather
+    /// than as a class constant lets an experiment make the planner produce a
+    /// fused plan and a split plan on identical fixture bytes — set the
+    /// property below the fixture's gap to force splitting, above it to force
+    /// fusing — without the class-initialization hazard a `static final`
+    /// constant would carry across a sweep. The production default is 64 KB.
+    private final int maxCrossColGapBytes =
+            Integer.getInteger(MAX_CROSS_COL_GAP_PROPERTY, DEFAULT_MAX_CROSS_COL_GAP_BYTES);
 
     /// Coalesces the *first* read of multiple columns within this row group
     /// into a smaller number of larger ranged GETs. See #374.
@@ -611,7 +711,7 @@ public class RowGroupIterator {
             long gap = (currentEnd < 0) ? 0 : e.offset() - currentEnd;
             long combinedSpan = (currentStart < 0) ? e.length() : e.offset() + e.length() - currentStart;
             if (current.isEmpty()
-                    || (gap <= MAX_CROSS_COL_GAP_BYTES && combinedSpan <= MAX_COALESCED_BYTES)) {
+                    || (gap <= maxCrossColGapBytes && combinedSpan <= MAX_COALESCED_BYTES)) {
                 if (current.isEmpty()) {
                     currentStart = e.offset();
                 }
@@ -686,6 +786,22 @@ public class RowGroupIterator {
         boolean isCoalesceSafe();
 
         void attachSharedRegion(SharedRegion region, int rowGroupIndex);
+
+        /// Returns the [SharedRegion] this plan's first read was fused into by
+        /// [#coalesceAcrossColumns], or `null` if the plan keeps a standalone
+        /// first read. Used by capture publication to group fused columns'
+        /// requirements under one final node.
+        SharedRegion attachedRegion();
+
+        /// Attaches capture identity to the plan's *standalone* first read
+        /// (not region-backed). For [IndexedFetchPlan] the first
+        /// [ChunkHandle] already exists and is stamped immediately; for
+        /// [SequentialFetchPlan] the first handle is created lazily in
+        /// `advanceChunk(0)`, so the identity is stored and stamped when that
+        /// handle is created — the spike's lazy-sequential-identity path.
+        /// Never called for region-backed (fused) plans: the [SharedRegion]
+        /// carries the identity in that case.
+        void setFirstReadCapture(CaptureContext context, NodeIdentity identity);
     }
 
     /// A contiguous byte range covering one or more pages within a column.
@@ -877,6 +993,13 @@ public class RowGroupIterator {
             }
             catch (Exception ignored) {
             }
+        }
+        // Execution quiescence for the one-row-group v0: all prefetch futures
+        // have joined, so no further request attempt can be recorded. Seal the
+        // execution (idempotent) so the request stream is closed with its
+        // order-independent attempt hash.
+        if (captureContext != null) {
+            captureContext.sealExecution();
         }
         fileFutures.clear();
         metadataCache.clear();

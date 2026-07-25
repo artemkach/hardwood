@@ -15,6 +15,8 @@ import java.util.concurrent.CompletableFuture;
 import dev.hardwood.InputFile;
 import dev.hardwood.internal.ExceptionContext;
 import dev.hardwood.internal.FetchReason;
+import dev.hardwood.internal.capture.CaptureContext;
+import dev.hardwood.internal.capture.NodeIdentity;
 
 /// Lazy fetch handle for a contiguous byte range in a Parquet file.
 ///
@@ -41,6 +43,14 @@ public class ChunkHandle {
     private final SharedRegion region;
     private volatile ChunkHandle nextChunk;
     private volatile ByteBuffer data;
+
+    /// Capture identity for this handle's own `readRange`, or `null` when
+    /// capture is disabled or this handle does not issue the plan's final
+    /// request (region-backed handles delegate to [SharedRegion], which
+    /// carries the identity instead). Assigned once, after the plan is
+    /// published, and before the handle is handed to column workers.
+    private volatile CaptureContext captureContext;
+    private volatile NodeIdentity captureIdentity;
 
     /// Creates a chunk handle for a byte range in the given file.
     ///
@@ -84,6 +94,14 @@ public class ChunkHandle {
     /// Sets the next chunk handle for pre-fetching.
     public void setNextChunk(ChunkHandle next) {
         this.nextChunk = next;
+    }
+
+    /// Attaches capture identity so this handle's `readRange` is recorded as
+    /// an attempt against the published node. No-op semantics on the disabled
+    /// path: the fields stay `null` and [#fetchData] does no capture work.
+    public void setCapture(CaptureContext context, NodeIdentity identity) {
+        this.captureContext = context;
+        this.captureIdentity = identity;
     }
 
     /// Returns the next chunk handle, or `null` if none is chained.
@@ -155,14 +173,24 @@ public class ChunkHandle {
             // so the log line shows both the calling context and the chunk identity.
             String outer = FetchReason.current();
             String composed = "unattributed".equals(outer) ? purpose : outer + " | " + purpose;
+            CaptureContext capture = captureContext;
+            long begin = capture != null ? System.nanoTime() : 0L;
             try (FetchReason.Scope ignored = FetchReason.set(composed)) {
                 data = inputFile.readRange(fileOffset, length);
             }
             catch (IOException e) {
+                if (capture != null) {
+                    capture.recordRequest(captureIdentity, fileOffset, length,
+                            false, begin, System.nanoTime() - begin);
+                }
                 throw new UncheckedIOException(
                         ExceptionContext.filePrefix(inputFile.name())
                         + "Failed to fetch chunk at offset " + fileOffset
                         + " (length " + length + ")", e);
+            }
+            if (capture != null) {
+                capture.recordRequest(captureIdentity, fileOffset, length,
+                        true, begin, System.nanoTime() - begin);
             }
         }
     }

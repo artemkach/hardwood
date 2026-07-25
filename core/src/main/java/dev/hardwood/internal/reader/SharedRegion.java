@@ -15,6 +15,8 @@ import java.util.concurrent.CompletableFuture;
 import dev.hardwood.InputFile;
 import dev.hardwood.internal.ExceptionContext;
 import dev.hardwood.internal.FetchReason;
+import dev.hardwood.internal.capture.CaptureContext;
+import dev.hardwood.internal.capture.NodeIdentity;
 
 /// A contiguous, multi-column byte range fetched in a single
 /// `readRange` call. Exists to coalesce the per-column reads of a row
@@ -41,6 +43,13 @@ public final class SharedRegion {
     private volatile SharedRegion nextRegion;
     private volatile ByteBuffer data;
 
+    /// Capture identity for this region's single `readRange`, or `null` when
+    /// capture is disabled. The region is the final request object in the
+    /// fused case (several columns' first reads served by one GET), so it
+    /// carries the node identity that the columns' handles delegate to.
+    private volatile CaptureContext captureContext;
+    private volatile NodeIdentity captureIdentity;
+
     public SharedRegion(InputFile inputFile, long fileOffset, int length, String purpose) {
         this.inputFile = inputFile;
         this.fileOffset = fileOffset;
@@ -61,6 +70,13 @@ public final class SharedRegion {
     /// kicked off on a worker thread.
     public void setNextRegion(SharedRegion next) {
         this.nextRegion = next;
+    }
+
+    /// Attaches capture identity so this region's `readRange` is recorded as
+    /// an attempt against the published (fused) node.
+    public void setCapture(CaptureContext context, NodeIdentity identity) {
+        this.captureContext = context;
+        this.captureIdentity = identity;
     }
 
     /// Returns a zero-copy slice covering `[absoluteOffset,
@@ -115,14 +131,24 @@ public final class SharedRegion {
             }
             String outer = FetchReason.current();
             String composed = "unattributed".equals(outer) ? purpose : outer + " | " + purpose;
+            CaptureContext capture = captureContext;
+            long begin = capture != null ? System.nanoTime() : 0L;
             try (FetchReason.Scope ignored = FetchReason.set(composed)) {
                 data = inputFile.readRange(fileOffset, length);
             }
             catch (IOException e) {
+                if (capture != null) {
+                    capture.recordRequest(captureIdentity, fileOffset, length,
+                            false, begin, System.nanoTime() - begin);
+                }
                 throw new UncheckedIOException(
                         ExceptionContext.filePrefix(inputFile.name())
                         + "Failed to fetch region at offset " + fileOffset
                         + " (length " + length + ")", e);
+            }
+            if (capture != null) {
+                capture.recordRequest(captureIdentity, fileOffset, length,
+                        true, begin, System.nanoTime() - begin);
             }
         }
     }

@@ -16,6 +16,8 @@ import java.util.List;
 import java.util.NoSuchElementException;
 
 import dev.hardwood.InputFile;
+import dev.hardwood.internal.capture.CaptureContext;
+import dev.hardwood.internal.capture.NodeIdentity;
 import dev.hardwood.internal.metadata.DataPageHeader;
 import dev.hardwood.internal.metadata.DataPageHeaderV2;
 import dev.hardwood.internal.metadata.PageHeader;
@@ -102,6 +104,18 @@ public final class SequentialFetchPlan implements FetchPlan, RowGroupIterator.Co
     /// columnChunkLength) still create per-column handles lazily.
     private ChunkHandle firstChunkHandle;
 
+    /// Set by [#attachSharedRegion] when cross-column coalescing fuses this
+    /// column's first read into a region; `null` for a standalone first read.
+    private SharedRegion attachedRegion;
+
+    /// Capture context and identity for this plan's standalone first read,
+    /// stashed by [#setFirstReadCapture] before the first [ChunkHandle]
+    /// exists. `advanceChunk(0)` stamps them onto the handle it creates — the
+    /// spike's lazy-sequential-identity path. Both `null` when capture is
+    /// disabled or when the first read is region-backed.
+    private CaptureContext firstReadCaptureContext;
+    private NodeIdentity firstReadCaptureIdentity;
+
     private SequentialFetchPlan(InputFile inputFile, long columnChunkOffset, int columnChunkLength,
                                  int chunkSize, ColumnSchema columnSchema,
                                  ColumnChunk columnChunk, HardwoodContextImpl context,
@@ -170,7 +184,23 @@ public final class SequentialFetchPlan implements FetchPlan, RowGroupIterator.Co
     /// view, so the first read slices the shared buffer rather than
     /// issuing a per-column `readRange`.
     @Override
+    public SharedRegion attachedRegion() {
+        return attachedRegion;
+    }
+
+    @Override
+    public void setFirstReadCapture(CaptureContext context, NodeIdentity identity) {
+        // The standalone first ChunkHandle does not exist yet — it is created
+        // lazily in advanceChunk(0). Stash the identity so that handle is
+        // stamped when created. This is the spike's lazy-sequential-identity
+        // path for an uncoalesced first read.
+        this.firstReadCaptureContext = context;
+        this.firstReadCaptureIdentity = identity;
+    }
+
+    @Override
     public void attachSharedRegion(SharedRegion region, int rowGroupIndex) {
+        this.attachedRegion = region;
         String purpose = "rg=" + rowGroupIndex + " col='" + columnSchema.name()
                 + "' seqChunk@0 (region-backed)";
         this.firstChunkHandle = new ChunkHandle(region,
@@ -404,6 +434,13 @@ public final class SequentialFetchPlan implements FetchPlan, RowGroupIterator.Co
                 currentHandle = new ChunkHandle(inputFile, columnChunkOffset + relPos, handleLength,
                         chunkPurpose(relPos));
                 handleStart = relPos;
+                // Lazy-sequential identity: the standalone first read's handle
+                // is created here, not at plan time. Stamp the capture identity
+                // stashed by setFirstReadCapture onto it so the read is recorded
+                // as an attempt against the published node.
+                if (relPos == 0 && firstReadCaptureContext != null) {
+                    currentHandle.setCapture(firstReadCaptureContext, firstReadCaptureIdentity);
+                }
             }
             handleEnd = handleStart + currentHandle.length();
 
