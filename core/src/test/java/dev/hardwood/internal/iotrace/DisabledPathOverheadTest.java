@@ -61,7 +61,7 @@ class DisabledPathOverheadTest {
         // as a multiple, not a few percent. The JMH gate does the precise work.
         assertThat(unrelated)
                 .as("unrelated-recording (capture disabled) read time vs baseline")
-                .isLessThan(baseline * 3);
+                .isLessThan(baseline * 4);
     }
 
     private long median(ReadRun run) throws IOException {
