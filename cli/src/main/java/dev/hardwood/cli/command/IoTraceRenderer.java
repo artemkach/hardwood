@@ -115,17 +115,12 @@ final class IoTraceRenderer {
         return fetched ? FILL_DEAD : FILL_UNPLANNED;
     }
 
-    /// Renders the arrival-ordered trace with node correlation and the
-    /// conformance verdict.
+    /// Renders the arrival-ordered trace with node correlation, timing
+    /// statistics, and the conformance verdict.
     static String renderTrace(List<TracingInputFile.TracedRead> trace,
-                              FetchPlanConformance.Result conformance,
-                              boolean remote) {
+                              FetchPlanConformance.Result conformance) {
         StringBuilder sb = new StringBuilder();
         sb.append("Trace (").append(trace.size()).append(" reads at the InputFile seam, invocation order)\n");
-        if (remote) {
-            sb.append("  note: remote input — the footer is served from the open() suffix-range\n")
-                    .append("  tail fetch, which is internal to S3InputFile and invisible at this seam\n");
-        }
 
         // Begin times are shown relative to the first read (t+0). Concurrent
         // reads (prefetch) overlap: a read may begin before the previous one
@@ -147,6 +142,8 @@ final class IoTraceRenderer {
         }
         sb.append(indent(RowTable.renderTable(headers, rows))).append('\n');
 
+        sb.append(renderTimingStats(trace, conformance));
+
         if (conformance.isConformant()) {
             sb.append("Conformance: OK — every plan node executed exactly once; ")
                     .append(conformance.unmatchedReads().size())
@@ -164,6 +161,73 @@ final class IoTraceRenderer {
             }
         }
         return sb.toString();
+    }
+
+    /// Renders fetch timing statistics: wall clock, busy time, overlap, and
+    /// aggregate throughput, split by data-stage reads (matched to plan
+    /// nodes) versus the whole trace.
+    ///
+    /// The aggregate throughput is bytes over *wall clock*, so under
+    /// concurrent reads sharing a connection or a link it reflects the pipe,
+    /// not any single stream. Overlap = busy / wall clock: 1.0× means fully
+    /// serial; N× means N reads in flight on average. All numbers describe
+    /// one run on this host and network — indicative, not calibrated.
+    static String renderTimingStats(List<TracingInputFile.TracedRead> trace,
+                                    FetchPlanConformance.Result conformance) {
+        if (trace.isEmpty()) {
+            return "";
+        }
+        List<TracingInputFile.TracedRead> dataReads = conformance.matched().stream()
+                .map(FetchPlanConformance.MatchedNode::read)
+                .toList();
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("Fetch timing\n");
+        sb.append(statsLine("all reads", trace));
+        if (!dataReads.isEmpty()) {
+            sb.append(statsLine("data stage", dataReads));
+            TracingInputFile.TracedRead slowest = dataReads.stream()
+                    .max(Comparator.comparingLong(TracingInputFile.TracedRead::durationNanos))
+                    .orElseThrow();
+            sb.append(String.format("  %-12s %s for %s at offset %d (%s)%n",
+                    "slowest read", formatNanos(slowest.durationNanos()),
+                    Sizes.format(slowest.length()), slowest.offset(),
+                    throughput(slowest.length(), slowest.durationNanos())));
+        }
+        return sb.toString();
+    }
+
+    private static String statsLine(String tag, List<TracingInputFile.TracedRead> reads) {
+        long begin = reads.stream().mapToLong(TracingInputFile.TracedRead::beginNanos).min().orElseThrow();
+        long end = reads.stream()
+                .mapToLong(r -> r.beginNanos() + r.durationNanos()).max().orElseThrow();
+        long wallClock = end - begin;
+        long busy = reads.stream().mapToLong(TracingInputFile.TracedRead::durationNanos).sum();
+        long bytes = reads.stream().mapToLong(TracingInputFile.TracedRead::length).sum();
+        double overlap = wallClock > 0 ? (double) busy / wallClock : 0;
+
+        return String.format("  %-12s wall clock %-10s busy %-10s overlap %-7s %s%n",
+                tag, formatNanos(wallClock), formatNanos(busy),
+                String.format("%.1fx", overlap), throughput(bytes, wallClock));
+    }
+
+    /// Bytes over elapsed nanos as a human rate; `—` when the interval is
+    /// too short to be meaningful (sub-microsecond, e.g. an mmap slice).
+    static String throughput(long bytes, long nanos) {
+        if (nanos < 1_000) {
+            return "—";
+        }
+        double bytesPerSecond = bytes * 1_000_000_000.0 / nanos;
+        if (bytesPerSecond >= 1024 * 1024 * 1024) {
+            return String.format("%.1f GB/s", bytesPerSecond / (1024.0 * 1024 * 1024));
+        }
+        if (bytesPerSecond >= 1024 * 1024) {
+            return String.format("%.1f MB/s", bytesPerSecond / (1024.0 * 1024));
+        }
+        if (bytesPerSecond >= 1024) {
+            return String.format("%.1f KB/s", bytesPerSecond / 1024.0);
+        }
+        return String.format("%.0f B/s", bytesPerSecond);
     }
 
     /// Human-scaled elapsed time: µs below 1 ms, ms below 10 s, else seconds.

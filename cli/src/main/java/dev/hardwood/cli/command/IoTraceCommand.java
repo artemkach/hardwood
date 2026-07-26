@@ -116,10 +116,9 @@ public class IoTraceCommand implements Command<CommandInvocation> {
             }
         }
 
-        boolean remote = fileMixin.file.startsWith("s3://");
         if (traceOnly) {
             System.out.print(IoTraceRenderer.renderTrace(traced.reads(),
-                    FetchPlanConformance.match(List.of(), traced.reads()), remote));
+                    FetchPlanConformance.match(List.of(), traced.reads())));
             return CommandResult.SUCCESS;
         }
 
@@ -132,7 +131,7 @@ public class IoTraceCommand implements Command<CommandInvocation> {
         }
 
         FetchPlanConformance.Result conformance = FetchPlanConformance.match(plans, traced.reads());
-        System.out.print(IoTraceRenderer.renderTrace(traced.reads(), conformance, remote));
+        System.out.print(IoTraceRenderer.renderTrace(traced.reads(), conformance));
         System.out.println();
         System.out.print(IoTraceRenderer.renderSummary(EXECUTION_ID, plans, effectiveGap()));
 

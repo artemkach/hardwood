@@ -83,7 +83,7 @@ class IoTraceRendererTest {
                 new TracingInputFile.TracedRead(9000, 8, 1_000, 250_000),        // metadata
                 new TracingInputFile.TracedRead(0, 300, 2_000_000, 30_000_000)); // node 1
         FetchPlanConformance.Result result = FetchPlanConformance.match(plan, trace);
-        String out = IoTraceRenderer.renderTrace(trace, result, false);
+        String out = IoTraceRenderer.renderTrace(trace, result);
         assertThat(out).contains("Conformance: OK");
         assertThat(out).contains("node 1");
         assertThat(out).contains("metadata");
@@ -105,10 +105,62 @@ class IoTraceRendererTest {
     }
 
     @Test
+    void timingStatsReportWallClockBusyOverlapAndThroughput() {
+        StaticFetchPlan plan = fusedWithGap();
+        // Two overlapping data-stage-shaped reads won't match this plan;
+        // build a trace where the plan's single node matches read 2 and a
+        // metadata read sits in front.
+        //   metadata: begins t=0, 1 ms
+        //   node 1:   begins t=1ms, 100 ms, 300 bytes
+        List<TracingInputFile.TracedRead> trace = List.of(
+                new TracingInputFile.TracedRead(9000, 8, 0, 1_000_000),
+                new TracingInputFile.TracedRead(0, 300, 1_000_000, 100_000_000));
+        FetchPlanConformance.Result result = FetchPlanConformance.match(plan, trace);
+        String out = IoTraceRenderer.renderTimingStats(trace, result);
+
+        // All reads: wall clock = 101 ms (t=0 to t=101ms), busy = 101 ms.
+        assertThat(out).contains("all reads");
+        assertThat(out).contains("wall clock 101.0ms");
+        // Data stage: the single matched read — 100 ms, fully serial.
+        assertThat(out).contains("data stage");
+        assertThat(out).contains("wall clock 100.0ms");
+        assertThat(out).contains("overlap 1.0x");
+        assertThat(out).contains("slowest read 100.0ms for 300 B");
+    }
+
+    @Test
+    void overlapExceedsOneForConcurrentReads() {
+        // Two 100-byte plan nodes read fully concurrently: wall clock 10 ms,
+        // busy 20 ms → overlap 2.0x.
+        StaticFetchPlan plan = new StaticFetchPlan(1, 0,
+                List.of(new StaticFetchPlan.Node(1, 0, 100, IoTraceSchema.STAGE_DATA, "a"),
+                        new StaticFetchPlan.Node(2, 200, 100, IoTraceSchema.STAGE_DATA, "b")),
+                List.of(new StaticFetchPlan.Requirement(1, 1, 0, 100, "a"),
+                        new StaticFetchPlan.Requirement(2, 2, 200, 100, "b")),
+                List.of(),
+                IoTraceSchema.STATUS_SUPPORTED, "", "h");
+        List<TracingInputFile.TracedRead> trace = List.of(
+                new TracingInputFile.TracedRead(0, 100, 0, 10_000_000),
+                new TracingInputFile.TracedRead(200, 100, 0, 10_000_000));
+        FetchPlanConformance.Result result = FetchPlanConformance.match(plan, trace);
+        String out = IoTraceRenderer.renderTimingStats(trace, result);
+        assertThat(out).contains("overlap 2.0x");
+    }
+
+    @Test
+    void throughputIsHumanScaled() {
+        assertThat(IoTraceRenderer.throughput(300, 500)).isEqualTo("—");
+        assertThat(IoTraceRenderer.throughput(500, 1_000_000_000)).isEqualTo("500 B/s");
+        assertThat(IoTraceRenderer.throughput(50 * 1024, 1_000_000_000)).isEqualTo("50.0 KB/s");
+        assertThat(IoTraceRenderer.throughput(7 * 1024 * 1024, 1_000_000_000)).isEqualTo("7.0 MB/s");
+        assertThat(IoTraceRenderer.throughput(3L * 1024 * 1024 * 1024, 1_000_000_000)).isEqualTo("3.0 GB/s");
+    }
+
+    @Test
     void missingExecutionRendersFailure() {
         StaticFetchPlan plan = fusedWithGap();
         FetchPlanConformance.Result result = FetchPlanConformance.match(plan, List.of());
-        String out = IoTraceRenderer.renderTrace(List.of(), result, false);
+        String out = IoTraceRenderer.renderTrace(List.of(), result);
         assertThat(out).contains("Conformance: FAILED");
         assertThat(out).contains("missing execution for node 1");
     }
