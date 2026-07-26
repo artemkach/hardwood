@@ -65,7 +65,8 @@ class SplitVersusFusedConformanceTest {
         // (footer reads), which the v0 data-stage plan does not model — the
         // local footer path issues three serial readRange calls.
         PlanConformance.Result result =
-                PlanConformance.matchOneToOne(plan, captured.trace().reads());
+                PlanConformance.match(plan, captured.trace().reads());
+        assertThat(result.isConformant()).isTrue();
         assertThat(result.unmatchedReads())
                 .as("unmatched reads must all be metadata-stage (three local footer reads)")
                 .hasSize(3);
@@ -90,7 +91,8 @@ class SplitVersusFusedConformanceTest {
             assertThat(plan.requirements()).hasSameSizeAs(plan.nodes());
 
             PlanConformance.Result result =
-                    PlanConformance.matchOneToOne(plan, captured.trace().reads());
+                    PlanConformance.match(plan, captured.trace().reads());
+            assertThat(result.isConformant()).isTrue();
             assertThat(result.unmatchedReads())
                     .as("unmatched reads must all be metadata-stage (three local footer reads)")
                     .hasSize(3);

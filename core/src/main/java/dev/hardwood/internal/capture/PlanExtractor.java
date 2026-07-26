@@ -13,6 +13,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 
 /// Reconstructs and validates [StaticFetchPlan]s from a mechanism-neutral
 /// [RecordSet], enforcing the dual-closure-plus-manifest protocol.
@@ -27,20 +28,23 @@ import java.util.Set;
 /// Validation, in order (any failure throws [CaptureLossException]):
 ///
 /// 1. schema version matches; no `jdk.DataLoss`;
-/// 2. every expected execution (from the manifest) has exactly one plan seal
-///    and exactly one execution seal; no unexpected execution IDs;
-/// 3. seal counts equal the observed record counts; the recomputed plan hash
-///    equals the sealed hash; the recomputed order-independent attempt hash
-///    equals the sealed execution hash;
+/// 2. every expected execution (from the manifest) has at least one plan
+///    seal — exactly the manifest's count when declared — with per-plan seal
+///    uniqueness, and exactly one execution seal; no unexpected execution IDs;
+/// 3. seal counts equal the observed record counts per plan; the recomputed
+///    plan hash equals each sealed hash; the recomputed order-independent
+///    attempt hash equals the sealed execution hash;
 /// 4. semantic conformance: every requirement and edge references a node in
-///    the same sealed plan; every request resolves unambiguously to a node;
-///    node IDs are unique; no dangling edges; no duplicate attempt IDs.
+///    the same sealed plan; every request resolves unambiguously to a node
+///    of its claimed plan; node IDs are unique execution-wide; no dangling
+///    or cross-plan edges; no duplicate attempt IDs.
 public final class PlanExtractor {
 
     private PlanExtractor() {
     }
 
-    /// Extracts the validated plan for a single-execution recording.
+    /// Extracts the validated plan for a single-execution, single-plan
+    /// recording. Rejects a recording with any other plan count.
     public static StaticFetchPlan extractSingle(RecordSet records, ScenarioManifest manifest) {
         List<StaticFetchPlan> plans = extract(records, manifest);
         if (plans.size() != 1) {
@@ -50,7 +54,10 @@ public final class PlanExtractor {
         return plans.get(0);
     }
 
-    /// Extracts and validates every expected execution's plan.
+    /// Extracts and validates every expected execution's plans, ordered by
+    /// `(executionId, planId)`. One execution produces one plan per row group
+    /// — plan seals are keyed by `(executionId, planId)` and each key must
+    /// appear exactly once.
     public static List<StaticFetchPlan> extract(RecordSet records, ScenarioManifest manifest) {
         if (records.schemaVersion() != CaptureSchema.VERSION) {
             throw new CaptureLossException("Schema version mismatch: recording is "
@@ -62,14 +69,19 @@ public final class PlanExtractor {
 
         Set<Long> expected = manifest.expectedExecutionIds();
 
-        // Group seals by execution and enforce exactly-one, no-duplicate,
-        // no-unexpected — this is where a lost or duplicated seal is caught.
-        Map<Long, CaptureRecords.PlanSealed> planSealByExec = new HashMap<>();
+        // Group plan seals by (execution, plan) and enforce per-key
+        // uniqueness and no-unexpected-execution — where a duplicated seal
+        // is caught. A *lost* plan seal is caught below: against the
+        // manifest's plan count when declared, or by this plan's surviving
+        // requests failing the unknown-request check when not.
+        Map<Long, Map<Long, CaptureRecords.PlanSealed>> planSealsByExec = new HashMap<>();
         for (CaptureRecords.PlanSealed seal : records.planSeals()) {
             requireExpected(expected, seal.executionId(), "plan seal");
-            if (planSealByExec.putIfAbsent(seal.executionId(), seal) != null) {
-                throw new CaptureLossException(
-                        "Duplicate plan seal for execution " + seal.executionId());
+            Map<Long, CaptureRecords.PlanSealed> byPlan =
+                    planSealsByExec.computeIfAbsent(seal.executionId(), k -> new TreeMap<>());
+            if (byPlan.putIfAbsent(seal.planId(), seal) != null) {
+                throw new CaptureLossException("Duplicate plan seal for execution "
+                        + seal.executionId() + " plan " + seal.planId());
             }
         }
         Map<Long, CaptureRecords.ExecutionSealed> execSealByExec = new HashMap<>();
@@ -81,95 +93,136 @@ public final class PlanExtractor {
             }
         }
         for (long execId : expected) {
-            if (!planSealByExec.containsKey(execId)) {
+            Map<Long, CaptureRecords.PlanSealed> byPlan = planSealsByExec.get(execId);
+            if (byPlan == null || byPlan.isEmpty()) {
                 throw new CaptureLossException("Missing plan seal for expected execution " + execId);
+            }
+            if (manifest.planCountKnown() && byPlan.size() != manifest.expectedPlanCount()) {
+                throw new CaptureLossException("Expected " + manifest.expectedPlanCount()
+                        + " plan(s) for execution " + execId + " but found " + byPlan.size()
+                        + " — a plan seal was lost or an unexpected plan appeared");
             }
             if (!execSealByExec.containsKey(execId)) {
                 throw new CaptureLossException("Missing execution seal for expected execution " + execId);
             }
         }
 
-        List<StaticFetchPlan> result = new ArrayList<>(expected.size());
+        List<StaticFetchPlan> result = new ArrayList<>();
         for (long execId : expected) {
-            result.add(reconstructOne(execId, records,
-                    planSealByExec.get(execId), execSealByExec.get(execId)));
+            result.addAll(reconstructExecution(execId, records,
+                    planSealsByExec.get(execId), execSealByExec.get(execId)));
         }
         return result;
     }
 
-    private static StaticFetchPlan reconstructOne(long execId, RecordSet records,
-                                                  CaptureRecords.PlanSealed planSeal,
-                                                  CaptureRecords.ExecutionSealed execSeal) {
-        long planId = planSeal.planId();
+    /// Reconstructs and validates all of one execution's plans, then
+    /// reconciles the execution-wide request stream against the execution
+    /// seal. Node IDs are execution-global, so a single ID set spans plans
+    /// and every request resolves unambiguously to `(planId, nodeId)`.
+    private static List<StaticFetchPlan> reconstructExecution(
+            long execId, RecordSet records,
+            Map<Long, CaptureRecords.PlanSealed> planSeals,
+            CaptureRecords.ExecutionSealed execSeal) {
 
-        // Collect this execution's nodes; reject duplicate node IDs.
-        List<StaticFetchPlan.Node> nodes = new ArrayList<>();
-        Set<Long> nodeIds = new HashSet<>();
-        CanonicalHash nodeHash = new CanonicalHash();
+        // Per-plan accumulators, keyed by planId in stable order.
+        Map<Long, List<StaticFetchPlan.Node>> nodesByPlan = new TreeMap<>();
+        Map<Long, List<StaticFetchPlan.Requirement>> reqsByPlan = new TreeMap<>();
+        Map<Long, List<StaticFetchPlan.Edge>> edgesByPlan = new TreeMap<>();
+        Map<Long, CanonicalHash> nodeHashByPlan = new TreeMap<>();
+        planSeals.keySet().forEach(planId -> {
+            nodesByPlan.put(planId, new ArrayList<>());
+            reqsByPlan.put(planId, new ArrayList<>());
+            edgesByPlan.put(planId, new ArrayList<>());
+            nodeHashByPlan.put(planId, new CanonicalHash());
+        });
+
+        // Node IDs are execution-global; map each to its plan so requests
+        // (which carry both IDs) can be checked for consistent membership.
+        Map<Long, Long> planByNodeId = new HashMap<>();
+
         for (CaptureRecords.PlanNode n : records.planNodes()) {
             if (n.executionId() != execId) {
                 continue;
             }
-            requireSamePlan(n.planId(), planId, "plan node " + n.nodeId());
-            if (!nodeIds.add(n.nodeId())) {
+            requireSealedPlan(planSeals, n.planId(), "plan node " + n.nodeId());
+            if (planByNodeId.putIfAbsent(n.nodeId(), n.planId()) != null) {
                 throw new CaptureLossException("Duplicate node ID " + n.nodeId()
                         + " in execution " + execId);
             }
-            nodes.add(new StaticFetchPlan.Node(n.nodeId(), n.offset(), n.length(), n.stage(), n.role()));
-            nodeHash.add(CanonicalHash.planNode(n.nodeId(), n.offset(), n.length(), n.stage(), n.role()));
+            nodesByPlan.get(n.planId()).add(new StaticFetchPlan.Node(
+                    n.nodeId(), n.offset(), n.length(), n.stage(), n.role()));
+            nodeHashByPlan.get(n.planId()).add(CanonicalHash.planNode(
+                    n.nodeId(), n.offset(), n.length(), n.stage(), n.role()));
         }
 
-        // Requirements must reference a node in this sealed plan.
-        List<StaticFetchPlan.Requirement> requirements = new ArrayList<>();
         for (CaptureRecords.PlanRequirement r : records.planRequirements()) {
             if (r.executionId() != execId) {
                 continue;
             }
-            requireSamePlan(r.planId(), planId, "requirement " + r.requirementId());
-            if (!nodeIds.contains(r.requestNodeId())) {
+            requireSealedPlan(planSeals, r.planId(), "requirement " + r.requirementId());
+            Long owningPlan = planByNodeId.get(r.requestNodeId());
+            if (owningPlan == null || owningPlan != r.planId()) {
                 throw new CaptureLossException("Requirement " + r.requirementId()
-                        + " references unknown node " + r.requestNodeId());
+                        + " references node " + r.requestNodeId()
+                        + " which is unknown or belongs to another plan");
             }
-            requirements.add(new StaticFetchPlan.Requirement(
+            reqsByPlan.get(r.planId()).add(new StaticFetchPlan.Requirement(
                     r.requirementId(), r.requestNodeId(), r.offset(), r.length(), r.columnRole()));
         }
 
-        // Edges must reference nodes in this sealed plan (no dangling edges).
-        List<StaticFetchPlan.Edge> edges = new ArrayList<>();
         for (CaptureRecords.PlanEdge e : records.planEdges()) {
             if (e.executionId() != execId) {
                 continue;
             }
-            requireSamePlan(e.planId(), planId, "edge");
-            if (!nodeIds.contains(e.fromNodeId()) || !nodeIds.contains(e.toNodeId())) {
-                throw new CaptureLossException("Dangling edge " + e.fromNodeId()
+            requireSealedPlan(planSeals, e.planId(), "edge");
+            Long fromPlan = planByNodeId.get(e.fromNodeId());
+            Long toPlan = planByNodeId.get(e.toNodeId());
+            if (fromPlan == null || toPlan == null
+                    || fromPlan != e.planId() || toPlan != e.planId()) {
+                throw new CaptureLossException("Dangling or cross-plan edge " + e.fromNodeId()
                         + " -> " + e.toNodeId() + " in execution " + execId);
             }
-            edges.add(new StaticFetchPlan.Edge(e.fromNodeId(), e.toNodeId(), e.edgeKind()));
+            edgesByPlan.get(e.planId()).add(new StaticFetchPlan.Edge(
+                    e.fromNodeId(), e.toNodeId(), e.edgeKind()));
         }
 
-        // Plan-seal reconciliation: counts and hash.
-        if (nodes.size() != planSeal.nodeCount()) {
-            throw new CaptureLossException("Plan node count mismatch for execution " + execId
-                    + ": sealed " + planSeal.nodeCount() + ", reconstructed " + nodes.size());
-        }
-        if (requirements.size() != planSeal.requirementCount()) {
-            throw new CaptureLossException("Requirement count mismatch for execution " + execId
-                    + ": sealed " + planSeal.requirementCount() + ", reconstructed " + requirements.size());
-        }
-        if (edges.size() != planSeal.edgeCount()) {
-            throw new CaptureLossException("Edge count mismatch for execution " + execId
-                    + ": sealed " + planSeal.edgeCount() + ", reconstructed " + edges.size());
-        }
-        String recomputedPlanHash = nodeHash.digest();
-        if (!recomputedPlanHash.equals(planSeal.planHash())) {
-            throw new CaptureLossException("Plan hash mismatch for execution " + execId
-                    + " — a plan node was lost or mutated in transport");
+        // Per-plan seal reconciliation: counts and hash.
+        List<StaticFetchPlan> plans = new ArrayList<>(planSeals.size());
+        for (Map.Entry<Long, CaptureRecords.PlanSealed> entry : planSeals.entrySet()) {
+            long planId = entry.getKey();
+            CaptureRecords.PlanSealed seal = entry.getValue();
+            List<StaticFetchPlan.Node> nodes = nodesByPlan.get(planId);
+            List<StaticFetchPlan.Requirement> requirements = reqsByPlan.get(planId);
+            List<StaticFetchPlan.Edge> edges = edgesByPlan.get(planId);
+
+            if (nodes.size() != seal.nodeCount()) {
+                throw new CaptureLossException("Plan node count mismatch for execution " + execId
+                        + " plan " + planId + ": sealed " + seal.nodeCount()
+                        + ", reconstructed " + nodes.size());
+            }
+            if (requirements.size() != seal.requirementCount()) {
+                throw new CaptureLossException("Requirement count mismatch for execution " + execId
+                        + " plan " + planId + ": sealed " + seal.requirementCount()
+                        + ", reconstructed " + requirements.size());
+            }
+            if (edges.size() != seal.edgeCount()) {
+                throw new CaptureLossException("Edge count mismatch for execution " + execId
+                        + " plan " + planId + ": sealed " + seal.edgeCount()
+                        + ", reconstructed " + edges.size());
+            }
+            String recomputedPlanHash = nodeHashByPlan.get(planId).digest();
+            if (!recomputedPlanHash.equals(seal.planHash())) {
+                throw new CaptureLossException("Plan hash mismatch for execution " + execId
+                        + " plan " + planId + " — a plan node was lost or mutated in transport");
+            }
+            plans.add(new StaticFetchPlan(execId, planId, nodes, requirements, edges,
+                    seal.status(), seal.reason(), recomputedPlanHash));
         }
 
-        // Execution-seal reconciliation: request attempts must resolve to a
-        // node in this plan, attempt IDs unique, count and order-independent
-        // hash match. This is what a plan-only seal cannot do.
+        // Execution-seal reconciliation across ALL plans: every attempt must
+        // resolve to a known node in its claimed plan, attempt IDs unique,
+        // count and order-independent hash match. This is what a plan-only
+        // seal cannot do.
         Set<Long> attemptIds = new HashSet<>();
         CanonicalHash attemptHash = new CanonicalHash();
         int attemptCount = 0;
@@ -177,10 +230,10 @@ public final class PlanExtractor {
             if (req.executionId() != execId) {
                 continue;
             }
-            requireSamePlan(req.planId(), planId, "request attempt " + req.attemptId());
-            if (!nodeIds.contains(req.nodeId())) {
+            Long owningPlan = planByNodeId.get(req.nodeId());
+            if (owningPlan == null || owningPlan != req.planId()) {
                 throw new CaptureLossException("Unplanned request against unknown node "
-                        + req.nodeId() + " in execution " + execId);
+                        + req.nodeId() + " (claimed plan " + req.planId() + ") in execution " + execId);
             }
             if (!attemptIds.add(req.attemptId())) {
                 throw new CaptureLossException("Duplicate attempt ID " + req.attemptId()
@@ -199,8 +252,7 @@ public final class PlanExtractor {
                     + " — a request attempt was lost, duplicated, or mutated in transport");
         }
 
-        return new StaticFetchPlan(execId, planId, nodes, requirements, edges,
-                planSeal.status(), planSeal.reason(), recomputedPlanHash);
+        return plans;
     }
 
     private static void requireExpected(Set<Long> expected, long execId, String what) {
@@ -210,10 +262,11 @@ public final class PlanExtractor {
         }
     }
 
-    private static void requireSamePlan(long planId, long expectedPlanId, String what) {
-        if (planId != expectedPlanId) {
+    private static void requireSealedPlan(Map<Long, CaptureRecords.PlanSealed> planSeals,
+                                          long planId, String what) {
+        if (!planSeals.containsKey(planId)) {
             throw new CaptureLossException(what + " belongs to plan " + planId
-                    + " but the execution's sealed plan is " + expectedPlanId);
+                    + " which has no seal in this execution");
         }
     }
 }

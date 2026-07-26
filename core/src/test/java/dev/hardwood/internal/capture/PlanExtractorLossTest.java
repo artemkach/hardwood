@@ -186,7 +186,7 @@ class PlanExtractorLossTest {
                 CaptureSchema.ROLE_COLUMN_FIRST_READ));
         assertThatThrownBy(() -> PlanExtractor.extractSingle(f.set(false), manifest()))
                 .isInstanceOf(CaptureLossException.class)
-                .hasMessageContaining("references unknown node");
+                .hasMessageContaining("references node 888");
     }
 
     @Test
