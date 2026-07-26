@@ -13,10 +13,10 @@ import java.util.List;
 
 import dev.hardwood.cli.internal.Sizes;
 import dev.hardwood.cli.internal.table.RowTable;
-import dev.hardwood.internal.capture.CaptureSchema;
-import dev.hardwood.internal.capture.PlanConformance;
-import dev.hardwood.internal.capture.StaticFetchPlan;
-import dev.hardwood.internal.capture.TracingInputFile;
+import dev.hardwood.internal.iotrace.CaptureSchema;
+import dev.hardwood.internal.iotrace.PlanConformance;
+import dev.hardwood.internal.iotrace.StaticFetchPlan;
+import dev.hardwood.internal.iotrace.TracingInputFile;
 
 /// Renders captured [StaticFetchPlan]s and the correlated seam trace as
 /// plain text: a byte-layout map per plan (the visual anchor), the

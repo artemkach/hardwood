@@ -15,8 +15,8 @@ import java.util.concurrent.CompletableFuture;
 import dev.hardwood.InputFile;
 import dev.hardwood.internal.ExceptionContext;
 import dev.hardwood.internal.FetchReason;
-import dev.hardwood.internal.capture.CaptureContext;
-import dev.hardwood.internal.capture.NodeIdentity;
+import dev.hardwood.internal.iotrace.CaptureContext;
+import dev.hardwood.internal.iotrace.NodeIdentity;
 
 /// A contiguous, multi-column byte range fetched in a single
 /// `readRange` call. Exists to coalesce the per-column reads of a row

@@ -16,8 +16,8 @@ import java.util.NoSuchElementException;
 import java.util.concurrent.CompletableFuture;
 
 import dev.hardwood.internal.FetchReason;
-import dev.hardwood.internal.capture.CaptureContext;
-import dev.hardwood.internal.capture.NodeIdentity;
+import dev.hardwood.internal.iotrace.CaptureContext;
+import dev.hardwood.internal.iotrace.NodeIdentity;
 import dev.hardwood.jfr.RowGroupScannedEvent;
 import dev.hardwood.metadata.ColumnChunk;
 import dev.hardwood.metadata.ColumnMetaData;

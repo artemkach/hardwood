@@ -16,8 +16,8 @@ import java.util.List;
 import java.util.NoSuchElementException;
 
 import dev.hardwood.InputFile;
-import dev.hardwood.internal.capture.CaptureContext;
-import dev.hardwood.internal.capture.NodeIdentity;
+import dev.hardwood.internal.iotrace.CaptureContext;
+import dev.hardwood.internal.iotrace.NodeIdentity;
 import dev.hardwood.internal.metadata.DataPageHeader;
 import dev.hardwood.internal.metadata.DataPageHeaderV2;
 import dev.hardwood.internal.metadata.PageHeader;

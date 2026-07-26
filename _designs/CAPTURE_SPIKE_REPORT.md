@@ -26,7 +26,7 @@ and everything hard — identity, canonical hashing, seal reconciliation — is
 shared. This is what makes the comparison fair: both mechanisms run the same
 reconstruction and are held to the same bar by the same code.
 
-### Mechanism-neutral core — `dev.hardwood.internal.capture`
+### Mechanism-neutral core — `dev.hardwood.internal.iotrace`
 
 | Type | Role |
 |---|---|
@@ -42,7 +42,7 @@ reconstruction and are held to the same bar by the same code.
 | `PlanExtractor` | The single reconstruction + validation path both mechanisms feed. |
 | `CaptureLossException` | Thrown on any protocol violation — rejection, never silent scoring. |
 
-### JFR mechanism — `dev.hardwood.jfr.capture`
+### JFR mechanism — `dev.hardwood.jfr.iotrace`
 
 Six `@Enabled(false) @StackTrace(false)` event classes (`PlanNodeEvent`,
 `PlanRequirementEvent`, `PlanEdgeEvent`, `PlanSealedEvent`, `RequestEvent`,
@@ -51,7 +51,7 @@ Six `@Enabled(false) @StackTrace(false)` event classes (`PlanNodeEvent`,
 `JfrRecordingReader` that parses a dumped `.jfr` into a `RecordSet` and flags
 `jdk.DataLoss`.
 
-### Observer mechanism — `dev.hardwood.internal.capture.ObserverCaptureSink`
+### Observer mechanism — `dev.hardwood.internal.iotrace.ObserverCaptureSink`
 
 In-memory `CopyOnWriteArrayList` append per record; `toRecordSet()` for
 extraction; `dataLoss` structurally always false.

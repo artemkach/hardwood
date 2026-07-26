@@ -15,8 +15,8 @@ import java.util.concurrent.CompletableFuture;
 import dev.hardwood.InputFile;
 import dev.hardwood.internal.ExceptionContext;
 import dev.hardwood.internal.FetchReason;
-import dev.hardwood.internal.capture.CaptureContext;
-import dev.hardwood.internal.capture.NodeIdentity;
+import dev.hardwood.internal.iotrace.CaptureContext;
+import dev.hardwood.internal.iotrace.NodeIdentity;
 
 /// Lazy fetch handle for a contiguous byte range in a Parquet file.
 ///

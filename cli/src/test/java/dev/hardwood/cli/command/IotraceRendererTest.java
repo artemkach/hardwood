@@ -11,10 +11,10 @@ import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
-import dev.hardwood.internal.capture.CaptureSchema;
-import dev.hardwood.internal.capture.PlanConformance;
-import dev.hardwood.internal.capture.StaticFetchPlan;
-import dev.hardwood.internal.capture.TracingInputFile;
+import dev.hardwood.internal.iotrace.CaptureSchema;
+import dev.hardwood.internal.iotrace.PlanConformance;
+import dev.hardwood.internal.iotrace.StaticFetchPlan;
+import dev.hardwood.internal.iotrace.TracingInputFile;
 
 import static org.assertj.core.api.Assertions.assertThat;
 

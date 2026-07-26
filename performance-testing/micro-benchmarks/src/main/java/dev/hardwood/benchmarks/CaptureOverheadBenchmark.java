@@ -27,9 +27,9 @@ import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.infra.Blackhole;
 
 import dev.hardwood.InputFile;
-import dev.hardwood.internal.capture.CaptureContext;
-import dev.hardwood.internal.capture.CaptureControl;
-import dev.hardwood.jfr.capture.JfrCaptureSink;
+import dev.hardwood.internal.iotrace.CaptureContext;
+import dev.hardwood.internal.iotrace.CaptureControl;
+import dev.hardwood.jfr.iotrace.JfrCaptureSink;
 import dev.hardwood.reader.ParquetFileReader;
 import dev.hardwood.reader.RowReader;
 import jdk.jfr.Recording;
@@ -112,12 +112,12 @@ public class CaptureOverheadBenchmark {
     @Benchmark
     public void captureEnabled(Blackhole bh) throws IOException {
         try (Recording recording = new Recording()) {
-            recording.enable("dev.hardwood.capture.PlanNode");
-            recording.enable("dev.hardwood.capture.PlanRequirement");
-            recording.enable("dev.hardwood.capture.PlanEdge");
-            recording.enable("dev.hardwood.capture.PlanSealed");
-            recording.enable("dev.hardwood.capture.Request");
-            recording.enable("dev.hardwood.capture.ExecutionSealed");
+            recording.enable("dev.hardwood.iotrace.PlanNode");
+            recording.enable("dev.hardwood.iotrace.PlanRequirement");
+            recording.enable("dev.hardwood.iotrace.PlanEdge");
+            recording.enable("dev.hardwood.iotrace.PlanSealed");
+            recording.enable("dev.hardwood.iotrace.Request");
+            recording.enable("dev.hardwood.iotrace.ExecutionSealed");
             recording.start();
             CaptureContext context = CaptureContext.start(1L, new JfrCaptureSink());
             try (CaptureControl.Scope ignored = CaptureControl.install(context)) {
