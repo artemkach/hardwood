@@ -54,16 +54,17 @@ public final class FetchPlanConformance {
 
         for (StaticFetchPlan plan : plans) {
             for (StaticFetchPlan.Node node : plan.nodesSorted()) {
-                TracingInputFile.TracedRead expected =
-                        new TracingInputFile.TracedRead(node.offset(), node.length());
-                if (!remaining.remove(expected)) {
+                // Structural matching only: covers() compares (offset, length)
+                // and deliberately ignores the read's timing fields.
+                TracingInputFile.TracedRead read =
+                        removeCovering(remaining, node.offset(), node.length());
+                if (read == null) {
                     missing.add(node);
                     continue;
                 }
-                matched.add(new MatchedNode(node, expected));
-                if (remaining.contains(expected)) {
+                matched.add(new MatchedNode(node, read));
+                if (removeCovering(remaining, node.offset(), node.length()) != null) {
                     duplicated.add(node);
-                    remaining.remove(expected);
                 }
             }
         }
@@ -74,5 +75,17 @@ public final class FetchPlanConformance {
     /// Single-plan convenience over [#match(List, List)].
     public static Result match(StaticFetchPlan plan, List<TracingInputFile.TracedRead> trace) {
         return match(List.of(plan), trace);
+    }
+
+    /// Removes and returns the first read covering exactly `[offset,
+    /// offset+length)`, or `null` if none remains.
+    private static TracingInputFile.TracedRead removeCovering(
+            List<TracingInputFile.TracedRead> remaining, long offset, int length) {
+        for (int i = 0; i < remaining.size(); i++) {
+            if (remaining.get(i).covers(offset, length)) {
+                return remaining.remove(i);
+            }
+        }
+        return null;
     }
 }

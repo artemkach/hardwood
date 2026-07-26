@@ -80,14 +80,28 @@ class IoTraceRendererTest {
     void conformantTraceRendersVerdictAndCorrelation() {
         StaticFetchPlan plan = fusedWithGap();
         List<TracingInputFile.TracedRead> trace = List.of(
-                new TracingInputFile.TracedRead(9000, 8),      // metadata
-                new TracingInputFile.TracedRead(0, 300));      // node 1
+                new TracingInputFile.TracedRead(9000, 8, 1_000, 250_000),        // metadata
+                new TracingInputFile.TracedRead(0, 300, 2_000_000, 30_000_000)); // node 1
         FetchPlanConformance.Result result = FetchPlanConformance.match(plan, trace);
         String out = IoTraceRenderer.renderTrace(trace, result, false);
         assertThat(out).contains("Conformance: OK");
         assertThat(out).contains("node 1");
         assertThat(out).contains("metadata");
         assertThat(out).contains("1 read(s) outside the data-stage plan");
+        // Timing columns: begin relative to the first read, human-scaled units.
+        assertThat(out).contains("t+0.0µs");
+        assertThat(out).contains("250.0µs");
+        assertThat(out).contains("t+2.0ms");
+        assertThat(out).contains("30.0ms");
+    }
+
+    @Test
+    void nanosFormatIsHumanScaled() {
+        assertThat(IoTraceRenderer.formatNanos(0)).isEqualTo("0.0µs");
+        assertThat(IoTraceRenderer.formatNanos(999_949)).isEqualTo("999.9µs");
+        assertThat(IoTraceRenderer.formatNanos(1_000_000)).isEqualTo("1.0ms");
+        assertThat(IoTraceRenderer.formatNanos(9_999_000_000L)).isEqualTo("9999.0ms");
+        assertThat(IoTraceRenderer.formatNanos(10_000_000_000L)).isEqualTo("10.0s");
     }
 
     @Test

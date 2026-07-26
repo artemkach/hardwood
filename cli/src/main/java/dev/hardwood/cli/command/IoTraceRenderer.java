@@ -121,18 +121,25 @@ final class IoTraceRenderer {
                               FetchPlanConformance.Result conformance,
                               boolean remote) {
         StringBuilder sb = new StringBuilder();
-        sb.append("Trace (").append(trace.size()).append(" reads at the InputFile seam, arrival order)\n");
+        sb.append("Trace (").append(trace.size()).append(" reads at the InputFile seam, invocation order)\n");
         if (remote) {
             sb.append("  note: remote input — the footer is served from the open() suffix-range\n")
                     .append("  tail fetch, which is internal to S3InputFile and invisible at this seam\n");
         }
 
-        String[] headers = {"#", "Offset", "Length", "Matched"};
+        // Begin times are shown relative to the first read (t+0). Concurrent
+        // reads (prefetch) overlap: a read may begin before the previous one
+        // ends — that overlap is the I/O-decode pipelining, visible here.
+        long t0 = trace.isEmpty() ? 0 : trace.get(0).beginNanos();
+
+        String[] headers = {"#", "Begin", "Duration", "Offset", "Length", "Matched"};
         List<String[]> rows = new ArrayList<>();
         int i = 1;
         for (TracingInputFile.TracedRead read : trace) {
             rows.add(new String[]{
                     Integer.toString(i++),
+                    "t+" + formatNanos(read.beginNanos() - t0),
+                    formatNanos(read.durationNanos()),
                     Long.toString(read.offset()),
                     Sizes.format(read.length()),
                     label(read, conformance)
@@ -159,9 +166,22 @@ final class IoTraceRenderer {
         return sb.toString();
     }
 
+    /// Human-scaled elapsed time: µs below 1 ms, ms below 10 s, else seconds.
+    /// One decimal keeps columns narrow while the local (µs) vs remote (ms)
+    /// difference stays unmistakable.
+    static String formatNanos(long nanos) {
+        if (nanos < 1_000_000L) {
+            return String.format("%.1fµs", nanos / 1_000.0);
+        }
+        if (nanos < 10_000_000_000L) {
+            return String.format("%.1fms", nanos / 1_000_000.0);
+        }
+        return String.format("%.1fs", nanos / 1_000_000_000.0);
+    }
+
     private static String label(TracingInputFile.TracedRead read, FetchPlanConformance.Result conformance) {
         for (FetchPlanConformance.MatchedNode m : conformance.matched()) {
-            if (m.read().equals(read)) {
+            if (m.read() == read) {
                 return "node " + m.node().nodeId();
             }
         }
