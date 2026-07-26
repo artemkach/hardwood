@@ -27,9 +27,9 @@ import org.openjdk.jmh.annotations.Warmup;
 import org.openjdk.jmh.infra.Blackhole;
 
 import dev.hardwood.InputFile;
-import dev.hardwood.internal.iotrace.CaptureContext;
-import dev.hardwood.internal.iotrace.CaptureControl;
-import dev.hardwood.jfr.iotrace.JfrCaptureSink;
+import dev.hardwood.internal.iotrace.IoTraceContext;
+import dev.hardwood.internal.iotrace.IoTraceControl;
+import dev.hardwood.jfr.iotrace.JfrIoTraceSink;
 import dev.hardwood.reader.ParquetFileReader;
 import dev.hardwood.reader.RowReader;
 import jdk.jfr.Recording;
@@ -119,8 +119,8 @@ public class CaptureOverheadBenchmark {
             recording.enable("dev.hardwood.iotrace.Request");
             recording.enable("dev.hardwood.iotrace.ExecutionSealed");
             recording.start();
-            CaptureContext context = CaptureContext.start(1L, new JfrCaptureSink());
-            try (CaptureControl.Scope ignored = CaptureControl.install(context)) {
+            IoTraceContext context = IoTraceContext.start(1L, new JfrIoTraceSink());
+            try (IoTraceControl.Scope ignored = IoTraceControl.install(context)) {
                 readAll(bh);
             }
             recording.stop();

@@ -52,7 +52,7 @@ class SplitVersusFusedConformanceTest {
 
     @Test
     void fusedPlanConformsAtTheInputFileSeam() throws Exception {
-        CaptureHarness.Captured captured = CaptureHarness.captureWithTrace(
+        IoTraceHarness.Captured captured = IoTraceHarness.captureWithTrace(
                 InputFile.of(SEQ_FILE), null, 300L);
         StaticFetchPlan plan = captured.plan();
 
@@ -64,8 +64,8 @@ class SplitVersusFusedConformanceTest {
         // with its exact range. Everything left over is metadata-stage
         // (footer reads), which the v0 data-stage plan does not model — the
         // local footer path issues three serial readRange calls.
-        PlanConformance.Result result =
-                PlanConformance.match(plan, captured.trace().reads());
+        FetchPlanConformance.Result result =
+                FetchPlanConformance.match(plan, captured.trace().reads());
         assertThat(result.isConformant()).isTrue();
         assertThat(result.unmatchedReads())
                 .as("unmatched reads must all be metadata-stage (three local footer reads)")
@@ -82,7 +82,7 @@ class SplitVersusFusedConformanceTest {
         String previous = System.getProperty(GAP_PROPERTY);
         System.setProperty(GAP_PROPERTY, "-1");
         try {
-            CaptureHarness.Captured captured = CaptureHarness.captureWithTrace(
+            IoTraceHarness.Captured captured = IoTraceHarness.captureWithTrace(
                     InputFile.of(SEQ_FILE), null, 301L);
             StaticFetchPlan plan = captured.plan();
 
@@ -90,8 +90,8 @@ class SplitVersusFusedConformanceTest {
             assertThat(plan.dataStageNodeCount()).isGreaterThan(1);
             assertThat(plan.requirements()).hasSameSizeAs(plan.nodes());
 
-            PlanConformance.Result result =
-                    PlanConformance.match(plan, captured.trace().reads());
+            FetchPlanConformance.Result result =
+                    FetchPlanConformance.match(plan, captured.trace().reads());
             assertThat(result.isConformant()).isTrue();
             assertThat(result.unmatchedReads())
                     .as("unmatched reads must all be metadata-stage (three local footer reads)")
@@ -107,14 +107,14 @@ class SplitVersusFusedConformanceTest {
         // The two contenders describe the same fixture bytes: their
         // requirements (per-column first reads) are identical; only the
         // materialization into final nodes differs.
-        StaticFetchPlan fused = CaptureHarness.captureWithObserver(
+        StaticFetchPlan fused = IoTraceHarness.captureWithObserver(
                 InputFile.of(SEQ_FILE), null, 302L);
 
         String previous = System.getProperty(GAP_PROPERTY);
         System.setProperty(GAP_PROPERTY, "-1");
         StaticFetchPlan split;
         try {
-            split = CaptureHarness.captureWithObserver(InputFile.of(SEQ_FILE), null, 303L);
+            split = IoTraceHarness.captureWithObserver(InputFile.of(SEQ_FILE), null, 303L);
         }
         finally {
             restore(previous);
@@ -133,13 +133,13 @@ class SplitVersusFusedConformanceTest {
         // page groups → its first read is not statically known. The v0
         // contract requires such a plan to be sealed INCOMPLETE (with a
         // reason), never silently exported as a complete DAG.
-        StaticFetchPlan plan = CaptureHarness.captureFilteredWithObserver(
+        StaticFetchPlan plan = IoTraceHarness.captureFilteredWithObserver(
                 InputFile.of(INDEXED_FILE),
                 ColumnProjection.columns("id", "value", "category"),
                 FilterPredicate.lt("id", 1000L), 304L);
 
         assertThat(plan.isSupported()).isFalse();
-        assertThat(plan.status()).isEqualTo(CaptureSchema.STATUS_INCOMPLETE);
+        assertThat(plan.status()).isEqualTo(IoTraceSchema.STATUS_INCOMPLETE);
         assertThat(plan.reason()).isNotEmpty();
     }
 

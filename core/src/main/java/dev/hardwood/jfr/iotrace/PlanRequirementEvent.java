@@ -21,7 +21,7 @@ import jdk.jfr.StackTrace;
 /// per-subrange records are never conflated with dependencies).
 @Name("dev.hardwood.iotrace.PlanRequirement")
 @Label("Plan Requirement")
-@Category({"Hardwood", "Iotrace"})
+@Category({"Hardwood", "IO Trace"})
 @Description("A first-read requirement materialized into a final request node")
 @Enabled(false)
 @StackTrace(false)

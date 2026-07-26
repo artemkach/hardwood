@@ -23,9 +23,9 @@ import java.util.concurrent.atomic.AtomicIntegerArray;
 import dev.hardwood.InputFile;
 import dev.hardwood.internal.ExceptionContext;
 import dev.hardwood.internal.FetchReason;
-import dev.hardwood.internal.iotrace.CaptureContext;
-import dev.hardwood.internal.iotrace.CaptureControl;
-import dev.hardwood.internal.iotrace.CaptureSchema;
+import dev.hardwood.internal.iotrace.IoTraceContext;
+import dev.hardwood.internal.iotrace.IoTraceControl;
+import dev.hardwood.internal.iotrace.IoTraceSchema;
 import dev.hardwood.internal.iotrace.NodeIdentity;
 import dev.hardwood.internal.metadata.PageHeader;
 import dev.hardwood.internal.predicate.PageDropPredicates;
@@ -84,7 +84,7 @@ public class RowGroupIterator {
     /// Per-execution plan-capture context, consumed at construction from the
     /// installing (build) thread. `null` when capture is disabled — the common
     /// case — in which case no capture work happens anywhere on the read path.
-    private final CaptureContext captureContext;
+    private final IoTraceContext captureContext;
 
     /// Number of leading rows of the first row group to skip. Non-zero only on
     /// the tail-read fast path; consumed by [#computeFetchPlans] to synthesize
@@ -228,7 +228,7 @@ public class RowGroupIterator {
         // thread. This is the only thread-local read on the path; from here
         // on the context lives by reference on this iterator, surviving the
         // async plan-construction and request-execution hand-offs.
-        this.captureContext = CaptureControl.pending();
+        this.captureContext = IoTraceControl.pending();
     }
 
     /// Returns the maximum rows limit (0 = unlimited).
@@ -606,7 +606,7 @@ public class RowGroupIterator {
     /// lazy sequential discovery) is sealed `INCOMPLETE` rather than exported
     /// as a complete DAG.
     private void publishCapture(FetchPlan[] plans, WorkItem workItem, boolean truncated) {
-        CaptureContext.PlanScope scope = captureContext.newPlan(workItem.workItemIndex());
+        IoTraceContext.PlanScope scope = captureContext.newPlan(workItem.workItemIndex());
         boolean anyUnsupported = truncated;
         String reason = truncated
                 ? "filter, row mask, or maxRows truncation makes first reads execution-resolved"
@@ -634,19 +634,19 @@ public class RowGroupIterator {
                 NodeIdentity node = regionNodes.get(region);
                 if (node == null) {
                     node = scope.node(region.fileOffset(), region.length(),
-                            CaptureSchema.STAGE_DATA, "rg" + workItem.rowGroupIndex() + "/fused");
+                            IoTraceSchema.STAGE_DATA, "rg" + workItem.rowGroupIndex() + "/fused");
                     regionNodes.put(region, node);
                     region.setCapture(captureContext, node);
                 }
                 scope.requirement(node.nodeId(), offset, length,
-                        CaptureSchema.ROLE_COLUMN_FIRST_READ);
+                        IoTraceSchema.ROLE_COLUMN_FIRST_READ);
             }
             else if (c.isCoalesceSafe()) {
                 NodeIdentity node = scope.node(offset, length,
-                        CaptureSchema.STAGE_DATA,
+                        IoTraceSchema.STAGE_DATA,
                         "rg" + workItem.rowGroupIndex() + "/col" + i);
                 scope.requirement(node.nodeId(), offset, length,
-                        CaptureSchema.ROLE_COLUMN_FIRST_READ);
+                        IoTraceSchema.ROLE_COLUMN_FIRST_READ);
                 c.setFirstReadCapture(captureContext, node);
             }
             else {
@@ -657,7 +657,7 @@ public class RowGroupIterator {
             }
         }
 
-        scope.seal(anyUnsupported ? CaptureSchema.STATUS_INCOMPLETE : CaptureSchema.STATUS_SUPPORTED,
+        scope.seal(anyUnsupported ? IoTraceSchema.STATUS_INCOMPLETE : IoTraceSchema.STATUS_SUPPORTED,
                 anyUnsupported ? reason : "");
     }
 
@@ -810,7 +810,7 @@ public class RowGroupIterator {
         /// handle is created — the spike's lazy-sequential-identity path.
         /// Never called for region-backed (fused) plans: the [SharedRegion]
         /// carries the identity in that case.
-        void setFirstReadCapture(CaptureContext context, NodeIdentity identity);
+        void setFirstReadCapture(IoTraceContext context, NodeIdentity identity);
     }
 
     /// A contiguous byte range covering one or more pages within a column.

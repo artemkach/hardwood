@@ -11,7 +11,7 @@ import org.junit.jupiter.api.Test;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-class IotraceCommandTest {
+class IoTraceCommandTest {
 
     private String fixture(String name) {
         return getClass().getResource("/" + name).getPath();

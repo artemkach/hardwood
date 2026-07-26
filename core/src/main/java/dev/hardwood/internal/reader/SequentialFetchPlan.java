@@ -16,7 +16,7 @@ import java.util.List;
 import java.util.NoSuchElementException;
 
 import dev.hardwood.InputFile;
-import dev.hardwood.internal.iotrace.CaptureContext;
+import dev.hardwood.internal.iotrace.IoTraceContext;
 import dev.hardwood.internal.iotrace.NodeIdentity;
 import dev.hardwood.internal.metadata.DataPageHeader;
 import dev.hardwood.internal.metadata.DataPageHeaderV2;
@@ -113,7 +113,7 @@ public final class SequentialFetchPlan implements FetchPlan, RowGroupIterator.Co
     /// exists. `advanceChunk(0)` stamps them onto the handle it creates — the
     /// spike's lazy-sequential-identity path. Both `null` when capture is
     /// disabled or when the first read is region-backed.
-    private CaptureContext firstReadCaptureContext;
+    private IoTraceContext firstReadCaptureContext;
     private NodeIdentity firstReadCaptureIdentity;
 
     private SequentialFetchPlan(InputFile inputFile, long columnChunkOffset, int columnChunkLength,
@@ -189,7 +189,7 @@ public final class SequentialFetchPlan implements FetchPlan, RowGroupIterator.Co
     }
 
     @Override
-    public void setFirstReadCapture(CaptureContext context, NodeIdentity identity) {
+    public void setFirstReadCapture(IoTraceContext context, NodeIdentity identity) {
         // The standalone first ChunkHandle does not exist yet — it is created
         // lazily in advanceChunk(0). Stash the identity so that handle is
         // stamped when created. This is the spike's lazy-sequential-identity

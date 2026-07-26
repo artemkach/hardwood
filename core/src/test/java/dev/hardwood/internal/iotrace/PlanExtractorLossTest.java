@@ -19,11 +19,11 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /// The incomplete-recording detection half of the spike's go/no-go, exercised
 /// at the reconstruction layer both mechanisms share. Each test builds a
-/// well-formed [RecordSet], drops or mutates one record, and asserts the
+/// well-formed [IoTraceRecordSet], drops or mutates one record, and asserts the
 /// dual-closure-plus-manifest protocol rejects it.
 ///
 /// These are mechanism-independent by design: the protocol lives above
-/// [CaptureSink], so a lost record is caught identically whether the loss
+/// [IoTraceSink], so a lost record is caught identically whether the loss
 /// happened in a JFR buffer or (hypothetically) an observer.
 class PlanExtractorLossTest {
 
@@ -34,53 +34,53 @@ class PlanExtractorLossTest {
     /// plus one standalone node), each with one executed attempt, correctly
     /// sealed. Serves as the baseline the loss cases perturb.
     private static Fixture valid() {
-        List<CaptureRecords.PlanNode> nodes = new ArrayList<>();
-        List<CaptureRecords.PlanRequirement> reqs = new ArrayList<>();
-        List<CaptureRecords.Request> requests = new ArrayList<>();
+        List<IoTraceRecords.PlanNode> nodes = new ArrayList<>();
+        List<IoTraceRecords.PlanRequirement> reqs = new ArrayList<>();
+        List<IoTraceRecords.Request> requests = new ArrayList<>();
 
         CanonicalHash nodeHash = new CanonicalHash();
         // node 1: fused region [0,300) serving cols at [0,100) and [200,100)
-        nodes.add(new CaptureRecords.PlanNode(EXEC, PLAN, 1, 0, 300, CaptureSchema.STAGE_DATA, "fused"));
-        nodeHash.add(CanonicalHash.planNode(1, 0, 300, CaptureSchema.STAGE_DATA, "fused"));
+        nodes.add(new IoTraceRecords.PlanNode(EXEC, PLAN, 1, 0, 300, IoTraceSchema.STAGE_DATA, "fused"));
+        nodeHash.add(CanonicalHash.planNode(1, 0, 300, IoTraceSchema.STAGE_DATA, "fused"));
         // node 2: standalone [500,50)
-        nodes.add(new CaptureRecords.PlanNode(EXEC, PLAN, 2, 500, 50, CaptureSchema.STAGE_DATA, "col2"));
-        nodeHash.add(CanonicalHash.planNode(2, 500, 50, CaptureSchema.STAGE_DATA, "col2"));
+        nodes.add(new IoTraceRecords.PlanNode(EXEC, PLAN, 2, 500, 50, IoTraceSchema.STAGE_DATA, "col2"));
+        nodeHash.add(CanonicalHash.planNode(2, 500, 50, IoTraceSchema.STAGE_DATA, "col2"));
 
-        reqs.add(new CaptureRecords.PlanRequirement(EXEC, PLAN, 1, 1, 0, 100, CaptureSchema.ROLE_COLUMN_FIRST_READ));
-        reqs.add(new CaptureRecords.PlanRequirement(EXEC, PLAN, 2, 1, 200, 100, CaptureSchema.ROLE_COLUMN_FIRST_READ));
-        reqs.add(new CaptureRecords.PlanRequirement(EXEC, PLAN, 3, 2, 500, 50, CaptureSchema.ROLE_COLUMN_FIRST_READ));
+        reqs.add(new IoTraceRecords.PlanRequirement(EXEC, PLAN, 1, 1, 0, 100, IoTraceSchema.ROLE_COLUMN_FIRST_READ));
+        reqs.add(new IoTraceRecords.PlanRequirement(EXEC, PLAN, 2, 1, 200, 100, IoTraceSchema.ROLE_COLUMN_FIRST_READ));
+        reqs.add(new IoTraceRecords.PlanRequirement(EXEC, PLAN, 3, 2, 500, 50, IoTraceSchema.ROLE_COLUMN_FIRST_READ));
 
-        CaptureRecords.PlanSealed planSeal = new CaptureRecords.PlanSealed(
-                EXEC, PLAN, 2, 3, 0, nodeHash.digest(), CaptureSchema.STATUS_SUPPORTED, "");
+        IoTraceRecords.PlanSealed planSeal = new IoTraceRecords.PlanSealed(
+                EXEC, PLAN, 2, 3, 0, nodeHash.digest(), IoTraceSchema.STATUS_SUPPORTED, "");
 
         CanonicalHash attemptHash = new CanonicalHash();
-        requests.add(new CaptureRecords.Request(EXEC, PLAN, 1, 1, 0, 300,
-                CaptureSchema.STAGE_DATA, CaptureSchema.OUTCOME_SUCCESS, 0, 10));
-        attemptHash.add(CanonicalHash.requestAttempt(1, 1, 0, 300, CaptureSchema.STAGE_DATA, CaptureSchema.OUTCOME_SUCCESS));
-        requests.add(new CaptureRecords.Request(EXEC, PLAN, 2, 2, 500, 50,
-                CaptureSchema.STAGE_DATA, CaptureSchema.OUTCOME_SUCCESS, 0, 10));
-        attemptHash.add(CanonicalHash.requestAttempt(2, 2, 500, 50, CaptureSchema.STAGE_DATA, CaptureSchema.OUTCOME_SUCCESS));
+        requests.add(new IoTraceRecords.Request(EXEC, PLAN, 1, 1, 0, 300,
+                IoTraceSchema.STAGE_DATA, IoTraceSchema.OUTCOME_SUCCESS, 0, 10));
+        attemptHash.add(CanonicalHash.requestAttempt(1, 1, 0, 300, IoTraceSchema.STAGE_DATA, IoTraceSchema.OUTCOME_SUCCESS));
+        requests.add(new IoTraceRecords.Request(EXEC, PLAN, 2, 2, 500, 50,
+                IoTraceSchema.STAGE_DATA, IoTraceSchema.OUTCOME_SUCCESS, 0, 10));
+        attemptHash.add(CanonicalHash.requestAttempt(2, 2, 500, 50, IoTraceSchema.STAGE_DATA, IoTraceSchema.OUTCOME_SUCCESS));
 
-        CaptureRecords.ExecutionSealed execSeal = new CaptureRecords.ExecutionSealed(
-                EXEC, 2, attemptHash.digest(), CaptureSchema.TERMINAL_COMPLETE);
+        IoTraceRecords.ExecutionSealed execSeal = new IoTraceRecords.ExecutionSealed(
+                EXEC, 2, attemptHash.digest(), IoTraceSchema.TERMINAL_COMPLETE);
 
-        List<CaptureRecords.PlanSealed> planSeals = new ArrayList<>();
+        List<IoTraceRecords.PlanSealed> planSeals = new ArrayList<>();
         planSeals.add(planSeal);
-        List<CaptureRecords.ExecutionSealed> execSeals = new ArrayList<>();
+        List<IoTraceRecords.ExecutionSealed> execSeals = new ArrayList<>();
         execSeals.add(execSeal);
         return new Fixture(nodes, reqs, new ArrayList<>(), planSeals, requests, execSeals);
     }
 
     private record Fixture(
-            List<CaptureRecords.PlanNode> nodes,
-            List<CaptureRecords.PlanRequirement> reqs,
-            List<CaptureRecords.PlanEdge> edges,
-            List<CaptureRecords.PlanSealed> planSeals,
-            List<CaptureRecords.Request> requests,
-            List<CaptureRecords.ExecutionSealed> execSeals) {
+            List<IoTraceRecords.PlanNode> nodes,
+            List<IoTraceRecords.PlanRequirement> reqs,
+            List<IoTraceRecords.PlanEdge> edges,
+            List<IoTraceRecords.PlanSealed> planSeals,
+            List<IoTraceRecords.Request> requests,
+            List<IoTraceRecords.ExecutionSealed> execSeals) {
 
-        RecordSet set(boolean dataLoss) {
-            return new RecordSet(CaptureSchema.VERSION, dataLoss, nodes, reqs, edges, planSeals, requests, execSeals);
+        IoTraceRecordSet set(boolean dataLoss) {
+            return new IoTraceRecordSet(IoTraceSchema.VERSION, dataLoss, nodes, reqs, edges, planSeals, requests, execSeals);
         }
     }
 
@@ -101,7 +101,7 @@ class PlanExtractorLossTest {
     @Test
     void dataLossRejected() {
         assertThatThrownBy(() -> PlanExtractor.extractSingle(valid().set(true), manifest()))
-                .isInstanceOf(CaptureLossException.class)
+                .isInstanceOf(IoTraceLossException.class)
                 .hasMessageContaining("jdk.DataLoss");
     }
 
@@ -110,9 +110,9 @@ class PlanExtractorLossTest {
         Fixture f = valid();
         f.planSeals().clear();
         assertThatThrownBy(() -> PlanExtractor.extractSingle(
-                new RecordSet(CaptureSchema.VERSION, false, f.nodes(), f.reqs(), f.edges(),
+                new IoTraceRecordSet(IoTraceSchema.VERSION, false, f.nodes(), f.reqs(), f.edges(),
                         f.planSeals(), f.requests(), f.execSeals()), manifest()))
-                .isInstanceOf(CaptureLossException.class)
+                .isInstanceOf(IoTraceLossException.class)
                 .hasMessageContaining("Missing plan seal");
     }
 
@@ -120,9 +120,9 @@ class PlanExtractorLossTest {
     void missingExecutionSealRejected() {
         Fixture f = valid();
         assertThatThrownBy(() -> PlanExtractor.extractSingle(
-                new RecordSet(CaptureSchema.VERSION, false, f.nodes(), f.reqs(), f.edges(),
+                new IoTraceRecordSet(IoTraceSchema.VERSION, false, f.nodes(), f.reqs(), f.edges(),
                         f.planSeals(), f.requests(), List.of()), manifest()))
-                .isInstanceOf(CaptureLossException.class)
+                .isInstanceOf(IoTraceLossException.class)
                 .hasMessageContaining("Missing execution seal");
     }
 
@@ -135,19 +135,19 @@ class PlanExtractorLossTest {
         f.nodes().remove(1);
         f.reqs().removeIf(r -> r.requestNodeId() == 2);
         assertThatThrownBy(() -> PlanExtractor.extractSingle(f.set(false), manifest()))
-                .isInstanceOf(CaptureLossException.class)
+                .isInstanceOf(IoTraceLossException.class)
                 .hasMessageContaining("node count mismatch");
     }
 
     @Test
     void mutatedPlanNodeCaughtByHash() {
         Fixture f = valid();
-        CaptureRecords.PlanNode n = f.nodes().get(0);
+        IoTraceRecords.PlanNode n = f.nodes().get(0);
         // Same count, mutated length — count passes, hash must catch it.
-        f.nodes().set(0, new CaptureRecords.PlanNode(
+        f.nodes().set(0, new IoTraceRecords.PlanNode(
                 n.executionId(), n.planId(), n.nodeId(), n.offset(), n.length() + 1, n.stage(), n.role()));
         assertThatThrownBy(() -> PlanExtractor.extractSingle(f.set(false), manifest()))
-                .isInstanceOf(CaptureLossException.class)
+                .isInstanceOf(IoTraceLossException.class)
                 .hasMessageContaining("Plan hash mismatch");
     }
 
@@ -156,7 +156,7 @@ class PlanExtractorLossTest {
         Fixture f = valid();
         f.requests().remove(1);     // drop an attempt; plan seal still fine
         assertThatThrownBy(() -> PlanExtractor.extractSingle(f.set(false), manifest()))
-                .isInstanceOf(CaptureLossException.class)
+                .isInstanceOf(IoTraceLossException.class)
                 .hasMessageContaining("attempt count mismatch");
     }
 
@@ -165,27 +165,27 @@ class PlanExtractorLossTest {
         Fixture f = valid();
         f.requests().add(f.requests().get(0));   // duplicate attempt id
         assertThatThrownBy(() -> PlanExtractor.extractSingle(f.set(false), manifest()))
-                .isInstanceOf(CaptureLossException.class)
+                .isInstanceOf(IoTraceLossException.class)
                 .hasMessageContaining("Duplicate attempt ID");
     }
 
     @Test
     void unplannedRequestRejected() {
         Fixture f = valid();
-        f.requests().add(new CaptureRecords.Request(EXEC, PLAN, 999, 3, 700, 20,
-                CaptureSchema.STAGE_DATA, CaptureSchema.OUTCOME_SUCCESS, 0, 5));
+        f.requests().add(new IoTraceRecords.Request(EXEC, PLAN, 999, 3, 700, 20,
+                IoTraceSchema.STAGE_DATA, IoTraceSchema.OUTCOME_SUCCESS, 0, 5));
         assertThatThrownBy(() -> PlanExtractor.extractSingle(f.set(false), manifest()))
-                .isInstanceOf(CaptureLossException.class)
+                .isInstanceOf(IoTraceLossException.class)
                 .hasMessageContaining("unknown node");
     }
 
     @Test
     void requirementReferencingUnknownNodeRejected() {
         Fixture f = valid();
-        f.reqs().add(new CaptureRecords.PlanRequirement(EXEC, PLAN, 99, 888, 0, 1,
-                CaptureSchema.ROLE_COLUMN_FIRST_READ));
+        f.reqs().add(new IoTraceRecords.PlanRequirement(EXEC, PLAN, 99, 888, 0, 1,
+                IoTraceSchema.ROLE_COLUMN_FIRST_READ));
         assertThatThrownBy(() -> PlanExtractor.extractSingle(f.set(false), manifest()))
-                .isInstanceOf(CaptureLossException.class)
+                .isInstanceOf(IoTraceLossException.class)
                 .hasMessageContaining("references node 888");
     }
 
@@ -194,16 +194,16 @@ class PlanExtractorLossTest {
         Fixture f = valid();
         assertThatThrownBy(() -> PlanExtractor.extractSingle(f.set(false),
                 ScenarioManifest.single(EXEC + 1)))
-                .isInstanceOf(CaptureLossException.class);
+                .isInstanceOf(IoTraceLossException.class);
     }
 
     @Test
     void schemaVersionMismatchRejected() {
         Fixture f = valid();
-        RecordSet wrongVersion = new RecordSet(CaptureSchema.VERSION + 1, false,
+        IoTraceRecordSet wrongVersion = new IoTraceRecordSet(IoTraceSchema.VERSION + 1, false,
                 f.nodes(), f.reqs(), f.edges(), f.planSeals(), f.requests(), f.execSeals());
         assertThatThrownBy(() -> PlanExtractor.extractSingle(wrongVersion, manifest()))
-                .isInstanceOf(CaptureLossException.class)
+                .isInstanceOf(IoTraceLossException.class)
                 .hasMessageContaining("Schema version mismatch");
     }
 
@@ -213,9 +213,9 @@ class PlanExtractorLossTest {
         // order (they commit from many threads). Reverse the request list and
         // confirm extraction still accepts it.
         Fixture f = valid();
-        List<CaptureRecords.Request> reversed = new ArrayList<>(f.requests());
+        List<IoTraceRecords.Request> reversed = new ArrayList<>(f.requests());
         Collections.reverse(reversed);
-        RecordSet set = new RecordSet(CaptureSchema.VERSION, false, f.nodes(), f.reqs(), f.edges(),
+        IoTraceRecordSet set = new IoTraceRecordSet(IoTraceSchema.VERSION, false, f.nodes(), f.reqs(), f.edges(),
                 f.planSeals(), reversed, f.execSeals());
         assertThatCode(() -> PlanExtractor.extractSingle(set, manifest())).doesNotThrowAnyException();
     }

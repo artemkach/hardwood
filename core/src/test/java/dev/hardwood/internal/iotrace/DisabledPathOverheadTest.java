@@ -14,7 +14,7 @@ import java.util.Arrays;
 import org.junit.jupiter.api.Test;
 
 import dev.hardwood.InputFile;
-import dev.hardwood.jfr.iotrace.JfrCaptureSink;
+import dev.hardwood.jfr.iotrace.JfrIoTraceSink;
 import dev.hardwood.reader.ParquetFileReader;
 import dev.hardwood.reader.RowReader;
 import jdk.jfr.Recording;
@@ -100,8 +100,8 @@ class DisabledPathOverheadTest {
             recording.enable("dev.hardwood.iotrace.Request");
             recording.enable("dev.hardwood.iotrace.ExecutionSealed");
             recording.start();
-            CaptureContext context = CaptureContext.start(1L, new JfrCaptureSink());
-            try (CaptureControl.Scope ignored = CaptureControl.install(context)) {
+            IoTraceContext context = IoTraceContext.start(1L, new JfrIoTraceSink());
+            try (IoTraceControl.Scope ignored = IoTraceControl.install(context)) {
                 readAll();
             }
             recording.stop();

@@ -27,14 +27,14 @@ import java.util.concurrent.atomic.AtomicLong;
 /// carries `planId`, so a request resolves unambiguously to its plan and node
 /// independent of event ordering or carrier migration.
 ///
-/// The mechanism (JFR vs observer) is entirely behind [CaptureSink]; this
+/// The mechanism (JFR vs observer) is entirely behind [IoTraceSink]; this
 /// class is identical under both. It is constructed only when capture is
 /// enabled — the disabled path holds a `null` context reference and does no
 /// work (see [dev.hardwood.internal.reader.ChunkHandle]).
-public final class CaptureContext {
+public final class IoTraceContext {
 
     private final long executionId;
-    private final CaptureSink sink;
+    private final IoTraceSink sink;
 
     private final AtomicLong nodeIdSeq = new AtomicLong();
     private final AtomicLong requirementIdSeq = new AtomicLong();
@@ -47,7 +47,7 @@ public final class CaptureContext {
     private volatile boolean anyFailure;
     private volatile boolean executionSealed;
 
-    private CaptureContext(long executionId, CaptureSink sink) {
+    private IoTraceContext(long executionId, IoTraceSink sink) {
         this.executionId = executionId;
         this.sink = sink;
     }
@@ -56,11 +56,11 @@ public final class CaptureContext {
     ///
     /// @param executionId the expected execution ID from the scenario manifest
     /// @param sink the delivery mechanism (JFR or observer)
-    public static CaptureContext start(long executionId, CaptureSink sink) {
+    public static IoTraceContext start(long executionId, IoTraceSink sink) {
         if (sink == null) {
             throw new IllegalArgumentException("sink must not be null");
         }
-        return new CaptureContext(executionId, sink);
+        return new IoTraceContext(executionId, sink);
     }
 
     public long executionId() {
@@ -81,7 +81,7 @@ public final class CaptureContext {
     /// or defective attempts are represented in the execution seal.
     public void recordRequest(NodeIdentity id, long actualOffset, int actualLength,
                               boolean success, long beginNanos, long durationNanos) {
-        String outcome = success ? CaptureSchema.OUTCOME_SUCCESS : CaptureSchema.OUTCOME_FAILURE;
+        String outcome = success ? IoTraceSchema.OUTCOME_SUCCESS : IoTraceSchema.OUTCOME_FAILURE;
         long attemptId = attemptIdSeq.incrementAndGet();
         sink.emitRequest(executionId, id.planId(), id.nodeId(), attemptId,
                 actualOffset, actualLength, id.stage(), outcome, beginNanos, durationNanos);
@@ -114,7 +114,7 @@ public final class CaptureContext {
             }
             hash = acc.digest();
         }
-        String terminal = anyFailure ? CaptureSchema.TERMINAL_ABORTED : CaptureSchema.TERMINAL_COMPLETE;
+        String terminal = anyFailure ? IoTraceSchema.TERMINAL_ABORTED : IoTraceSchema.TERMINAL_COMPLETE;
         sink.emitExecutionSealed(executionId, count, hash, terminal);
     }
 

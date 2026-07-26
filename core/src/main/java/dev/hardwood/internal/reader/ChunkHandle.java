@@ -15,7 +15,7 @@ import java.util.concurrent.CompletableFuture;
 import dev.hardwood.InputFile;
 import dev.hardwood.internal.ExceptionContext;
 import dev.hardwood.internal.FetchReason;
-import dev.hardwood.internal.iotrace.CaptureContext;
+import dev.hardwood.internal.iotrace.IoTraceContext;
 import dev.hardwood.internal.iotrace.NodeIdentity;
 
 /// Lazy fetch handle for a contiguous byte range in a Parquet file.
@@ -49,7 +49,7 @@ public class ChunkHandle {
     /// request (region-backed handles delegate to [SharedRegion], which
     /// carries the identity instead). Assigned once, after the plan is
     /// published, and before the handle is handed to column workers.
-    private volatile CaptureContext captureContext;
+    private volatile IoTraceContext captureContext;
     private volatile NodeIdentity captureIdentity;
 
     /// Creates a chunk handle for a byte range in the given file.
@@ -99,7 +99,7 @@ public class ChunkHandle {
     /// Attaches capture identity so this handle's `readRange` is recorded as
     /// an attempt against the published node. No-op semantics on the disabled
     /// path: the fields stay `null` and [#fetchData] does no capture work.
-    public void setCapture(CaptureContext context, NodeIdentity identity) {
+    public void setCapture(IoTraceContext context, NodeIdentity identity) {
         this.captureContext = context;
         this.captureIdentity = identity;
     }
@@ -173,7 +173,7 @@ public class ChunkHandle {
             // so the log line shows both the calling context and the chunk identity.
             String outer = FetchReason.current();
             String composed = "unattributed".equals(outer) ? purpose : outer + " | " + purpose;
-            CaptureContext capture = captureContext;
+            IoTraceContext capture = captureContext;
             long begin = capture != null ? System.nanoTime() : 0L;
             try (FetchReason.Scope ignored = FetchReason.set(composed)) {
                 data = inputFile.readRange(fileOffset, length);

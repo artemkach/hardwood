@@ -15,17 +15,17 @@ import dev.hardwood.reader.ParquetFileReader;
 import dev.hardwood.reader.RowReader;
 import dev.hardwood.schema.ColumnProjection;
 
-/// Test-side driver that installs a [CaptureContext], builds a reader
+/// Test-side driver that installs a [IoTraceContext], builds a reader
 /// synchronously (so the [dev.hardwood.internal.reader.RowGroupIterator]
 /// consumes the pending context on the build thread), reads every row, and
 /// returns the validated [StaticFetchPlan].
 ///
 /// It exercises the same install → build → read → seal → extract path both
-/// mechanisms share; only the [CaptureSink] differs between the observer and
+/// mechanisms share; only the [IoTraceSink] differs between the observer and
 /// JFR variants, which is exactly the comparison the spike calls for.
-final class CaptureHarness {
+final class IoTraceHarness {
 
-    private CaptureHarness() {
+    private IoTraceHarness() {
     }
 
     /// A capture run's two artifacts: the reconstructed plan and the
@@ -36,8 +36,8 @@ final class CaptureHarness {
     /// validated plan. `executionId` must match the scenario manifest.
     static StaticFetchPlan captureWithObserver(InputFile file, ColumnProjection projection,
                                                long executionId) throws IOException {
-        ObserverCaptureSink sink = new ObserverCaptureSink();
-        CaptureContext context = CaptureContext.start(executionId, sink);
+        ObserverIoTraceSink sink = new ObserverIoTraceSink();
+        IoTraceContext context = IoTraceContext.start(executionId, sink);
         readUnderCapture(file, projection, context);
         return PlanExtractor.extractSingle(sink.toRecordSet(), ScenarioManifest.single(executionId));
     }
@@ -47,8 +47,8 @@ final class CaptureHarness {
     static Captured captureWithTrace(InputFile file, ColumnProjection projection,
                                      long executionId) throws IOException {
         TracingInputFile traced = new TracingInputFile(file);
-        ObserverCaptureSink sink = new ObserverCaptureSink();
-        CaptureContext context = CaptureContext.start(executionId, sink);
+        ObserverIoTraceSink sink = new ObserverIoTraceSink();
+        IoTraceContext context = IoTraceContext.start(executionId, sink);
         readUnderCapture(traced, projection, context);
         StaticFetchPlan plan = PlanExtractor.extractSingle(
                 sink.toRecordSet(), ScenarioManifest.single(executionId));
@@ -61,10 +61,10 @@ final class CaptureHarness {
     static StaticFetchPlan captureFilteredWithObserver(InputFile file, ColumnProjection projection,
                                                        FilterPredicate filter, long executionId)
             throws IOException {
-        ObserverCaptureSink sink = new ObserverCaptureSink();
-        CaptureContext context = CaptureContext.start(executionId, sink);
+        ObserverIoTraceSink sink = new ObserverIoTraceSink();
+        IoTraceContext context = IoTraceContext.start(executionId, sink);
         file.open();
-        try (CaptureControl.Scope ignored = CaptureControl.install(context);
+        try (IoTraceControl.Scope ignored = IoTraceControl.install(context);
              ParquetFileReader reader = ParquetFileReader.open(file);
              RowReader rows = reader.buildRowReader()
                      .projection(projection).filter(filter).build()) {
@@ -78,9 +78,9 @@ final class CaptureHarness {
     /// Runs one capture against an arbitrary sink and returns nothing — used by
     /// the JFR test, which extracts from the dumped recording instead.
     static void readUnderCapture(InputFile file, ColumnProjection projection,
-                                 CaptureContext context) throws IOException {
+                                 IoTraceContext context) throws IOException {
         file.open();
-        try (CaptureControl.Scope ignored = CaptureControl.install(context);
+        try (IoTraceControl.Scope ignored = IoTraceControl.install(context);
              ParquetFileReader reader = ParquetFileReader.open(file)) {
             RowReader rows = projection == null
                     ? reader.rowReader()

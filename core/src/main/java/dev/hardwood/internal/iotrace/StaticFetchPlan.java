@@ -47,7 +47,7 @@ public record StaticFetchPlan(
     public int dataStageNodeCount() {
         int count = 0;
         for (Node n : nodes) {
-            if (CaptureSchema.STAGE_DATA.equals(n.stage())) {
+            if (IoTraceSchema.STAGE_DATA.equals(n.stage())) {
                 count++;
             }
         }
@@ -87,7 +87,7 @@ public record StaticFetchPlan(
 
     /// Whether this plan was sealed as a complete v0 static plan.
     public boolean isSupported() {
-        return CaptureSchema.STATUS_SUPPORTED.equals(status);
+        return IoTraceSchema.STATUS_SUPPORTED.equals(status);
     }
 
     /// Returns the nodes sorted by ID (canonical order for serialization).

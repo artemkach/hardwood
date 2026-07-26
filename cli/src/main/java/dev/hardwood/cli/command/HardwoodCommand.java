@@ -23,7 +23,7 @@ import dev.hardwood.cli.internal.Version;
         FooterCommand.class,
         InspectCommand.class,
         PrintCommand.class,
-        IotraceCommand.class,
+        IoTraceCommand.class,
         DiveCommand.class
 })
 public class HardwoodCommand implements Command<CommandInvocation> {

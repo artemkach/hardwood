@@ -27,7 +27,7 @@ import jdk.jfr.StackTrace;
 /// portably carry records, enums, arrays, or collections.
 @Name("dev.hardwood.iotrace.PlanNode")
 @Label("Plan Node")
-@Category({"Hardwood", "Iotrace"})
+@Category({"Hardwood", "IO Trace"})
 @Description("A final post-coalescing request node in a captured static fetch plan")
 @Enabled(false)
 @StackTrace(false)

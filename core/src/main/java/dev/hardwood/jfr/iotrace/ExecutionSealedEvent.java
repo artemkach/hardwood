@@ -21,7 +21,7 @@ import jdk.jfr.StackTrace;
 /// or unplanned request is detectable — which the plan seal alone cannot do.
 @Name("dev.hardwood.iotrace.ExecutionSealed")
 @Label("Execution Sealed")
-@Category({"Hardwood", "Iotrace"})
+@Category({"Hardwood", "IO Trace"})
 @Description("Execution seal closing the request stream with an order-independent hash")
 @Enabled(false)
 @StackTrace(false)

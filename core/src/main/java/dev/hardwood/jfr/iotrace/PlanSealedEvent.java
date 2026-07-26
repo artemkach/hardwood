@@ -22,7 +22,7 @@ import jdk.jfr.StackTrace;
 /// plan is not confused with recording loss.
 @Name("dev.hardwood.iotrace.PlanSealed")
 @Label("Plan Sealed")
-@Category({"Hardwood", "Iotrace"})
+@Category({"Hardwood", "IO Trace"})
 @Description("Plan-publication seal with counts and hash for loss detection")
 @Enabled(false)
 @StackTrace(false)

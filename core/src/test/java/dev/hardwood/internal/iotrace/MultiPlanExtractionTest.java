@@ -37,9 +37,9 @@ class MultiPlanExtractionTest {
 
     @Test
     void multiRowGroupFileYieldsOnePlanPerRowGroup() throws IOException {
-        ObserverCaptureSink sink = new ObserverCaptureSink();
-        CaptureContext context = CaptureContext.start(500L, sink);
-        CaptureHarness.readUnderCapture(InputFile.of(MULTI_RG_FILE), null, context);
+        ObserverIoTraceSink sink = new ObserverIoTraceSink();
+        IoTraceContext context = IoTraceContext.start(500L, sink);
+        IoTraceHarness.readUnderCapture(InputFile.of(MULTI_RG_FILE), null, context);
 
         List<StaticFetchPlan> plans = PlanExtractor.extract(
                 sink.toRecordSet(), ScenarioManifest.singleUnknownPlans(500L));
@@ -64,10 +64,10 @@ class MultiPlanExtractionTest {
 
     @Test
     void declaredPlanCountIsEnforced() throws IOException {
-        ObserverCaptureSink sink = new ObserverCaptureSink();
-        CaptureContext context = CaptureContext.start(501L, sink);
-        CaptureHarness.readUnderCapture(InputFile.of(MULTI_RG_FILE), null, context);
-        RecordSet records = sink.toRecordSet();
+        ObserverIoTraceSink sink = new ObserverIoTraceSink();
+        IoTraceContext context = IoTraceContext.start(501L, sink);
+        IoTraceHarness.readUnderCapture(InputFile.of(MULTI_RG_FILE), null, context);
+        IoTraceRecordSet records = sink.toRecordSet();
 
         // The right count passes...
         assertThat(PlanExtractor.extract(records,
@@ -75,26 +75,26 @@ class MultiPlanExtractionTest {
         // ...the wrong count is a loss signal.
         assertThatThrownBy(() -> PlanExtractor.extract(records,
                 new ScenarioManifest(Set.of(501L), 2)))
-                .isInstanceOf(CaptureLossException.class)
+                .isInstanceOf(IoTraceLossException.class)
                 .hasMessageContaining("Expected 2 plan(s)");
     }
 
     @Test
     void lostPlanSealAmongManyIsCaughtByDeclaredCount() throws IOException {
-        ObserverCaptureSink sink = new ObserverCaptureSink();
-        CaptureContext context = CaptureContext.start(502L, sink);
-        CaptureHarness.readUnderCapture(InputFile.of(MULTI_RG_FILE), null, context);
-        RecordSet full = sink.toRecordSet();
+        ObserverIoTraceSink sink = new ObserverIoTraceSink();
+        IoTraceContext context = IoTraceContext.start(502L, sink);
+        IoTraceHarness.readUnderCapture(InputFile.of(MULTI_RG_FILE), null, context);
+        IoTraceRecordSet full = sink.toRecordSet();
 
         // Drop the middle plan's seal, keeping its nodes and requests.
-        RecordSet oneSealLost = new RecordSet(full.schemaVersion(), full.dataLoss(),
+        IoTraceRecordSet oneSealLost = new IoTraceRecordSet(full.schemaVersion(), full.dataLoss(),
                 full.planNodes(), full.planRequirements(), full.planEdges(),
                 full.planSeals().stream().skip(1).toList(),
                 full.requests(), full.executionSeals());
 
         assertThatThrownBy(() -> PlanExtractor.extract(oneSealLost,
                 new ScenarioManifest(Set.of(502L), 3)))
-                .isInstanceOf(CaptureLossException.class);
+                .isInstanceOf(IoTraceLossException.class);
     }
 
     @Test
@@ -102,19 +102,19 @@ class MultiPlanExtractionTest {
         // With an unknown plan count the manifest cannot see a vanished plan
         // — but a plan whose seal was lost while its nodes/requests survived
         // is still caught: its records reference a plan with no seal.
-        ObserverCaptureSink sink = new ObserverCaptureSink();
-        CaptureContext context = CaptureContext.start(503L, sink);
-        CaptureHarness.readUnderCapture(InputFile.of(MULTI_RG_FILE), null, context);
-        RecordSet full = sink.toRecordSet();
+        ObserverIoTraceSink sink = new ObserverIoTraceSink();
+        IoTraceContext context = IoTraceContext.start(503L, sink);
+        IoTraceHarness.readUnderCapture(InputFile.of(MULTI_RG_FILE), null, context);
+        IoTraceRecordSet full = sink.toRecordSet();
 
-        RecordSet oneSealLost = new RecordSet(full.schemaVersion(), full.dataLoss(),
+        IoTraceRecordSet oneSealLost = new IoTraceRecordSet(full.schemaVersion(), full.dataLoss(),
                 full.planNodes(), full.planRequirements(), full.planEdges(),
                 full.planSeals().stream().skip(1).toList(),
                 full.requests(), full.executionSeals());
 
         assertThatThrownBy(() -> PlanExtractor.extract(oneSealLost,
                 ScenarioManifest.singleUnknownPlans(503L)))
-                .isInstanceOf(CaptureLossException.class)
+                .isInstanceOf(IoTraceLossException.class)
                 .hasMessageContaining("no seal");
     }
 }

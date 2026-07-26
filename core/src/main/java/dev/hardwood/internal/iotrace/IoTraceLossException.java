@@ -15,9 +15,9 @@ package dev.hardwood.internal.iotrace;
 /// Rejection is the point: a lossy or defective capture must be refused rather
 /// than silently scored, because a plan being scored that is not the plan that
 /// ran makes every downstream number fiction.
-public final class CaptureLossException extends RuntimeException {
+public final class IoTraceLossException extends RuntimeException {
 
-    public CaptureLossException(String message) {
+    public IoTraceLossException(String message) {
         super(message);
     }
 }

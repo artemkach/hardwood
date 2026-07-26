@@ -30,35 +30,35 @@ reconstruction and are held to the same bar by the same code.
 
 | Type | Role |
 |---|---|
-| `CaptureSink` | The delivery seam. Six `emit*` methods, one per record type. The only thing that differs between JFR and observer. |
-| `CaptureSchema` | Versioned string constants (stages, seal status, outcomes). Schema version 1. |
+| `IoTraceSink` | The delivery seam. Six `emit*` methods, one per record type. The only thing that differs between JFR and observer. |
+| `IoTraceSchema` | Versioned string constants (stages, seal status, outcomes). Schema version 1. |
 | `NodeIdentity` | Stable semantic identity `(executionId, planId, nodeId, stage, role)` carried on the request object — the irreducible custom work. |
-| `CaptureContext` | Per-execution state: monotonic ID assignment, per-plan `PlanScope`, order-independent execution accumulator, dual seal emission. No process-global state; propagated by reference. |
-| `CaptureControl` | Thread-confined install handshake — a reader consumes the pending context at construction, then it lives by reference. The only thread-local read on the path. |
+| `IoTraceContext` | Per-execution state: monotonic ID assignment, per-plan `PlanScope`, order-independent execution accumulator, dual seal emission. No process-global state; propagated by reference. |
+| `IoTraceControl` | Thread-confined install handshake — a reader consumes the pending context at construction, then it lives by reference. The only thread-local read on the path. |
 | `CanonicalHash` | Order-independent SHA-256 over canonical record encodings. Structural fields only (no timestamps/threads). |
-| `CaptureRecords` / `RecordSet` | Plain carriers both mechanisms materialize into before extraction. |
+| `IoTraceRecords` / `IoTraceRecordSet` | Plain carriers both mechanisms materialize into before extraction. |
 | `StaticFetchPlan` | The canonical scorer artifact both mechanisms reconstruct. |
 | `ScenarioManifest` | The external expected-execution set written before the run — the only way lost seals become detectable. |
 | `PlanExtractor` | The single reconstruction + validation path both mechanisms feed. |
-| `CaptureLossException` | Thrown on any protocol violation — rejection, never silent scoring. |
+| `IoTraceLossException` | Thrown on any protocol violation — rejection, never silent scoring. |
 
 ### JFR mechanism — `dev.hardwood.jfr.iotrace`
 
 Six `@Enabled(false) @StackTrace(false)` event classes (`PlanNodeEvent`,
 `PlanRequirementEvent`, `PlanEdgeEvent`, `PlanSealedEvent`, `RequestEvent`,
-`ExecutionSealedEvent`); `JfrCaptureSink` with a **cached**
+`ExecutionSealedEvent`); `JfrIoTraceSink` with a **cached**
 `EventType.getEventType(...).isEnabled()` guard read once at construction;
-`JfrRecordingReader` that parses a dumped `.jfr` into a `RecordSet` and flags
+`JfrRecordingReader` that parses a dumped `.jfr` into a `IoTraceRecordSet` and flags
 `jdk.DataLoss`.
 
-### Observer mechanism — `dev.hardwood.internal.iotrace.ObserverCaptureSink`
+### Observer mechanism — `dev.hardwood.internal.iotrace.ObserverIoTraceSink`
 
 In-memory `CopyOnWriteArrayList` append per record; `toRecordSet()` for
 extraction; `dataLoss` structurally always false.
 
 ### Planner wiring — `internal.reader` (5 files touched)
 
-- `ChunkHandle` / `SharedRegion` carry an optional `CaptureContext` +
+- `ChunkHandle` / `SharedRegion` carry an optional `IoTraceContext` +
   `NodeIdentity`; on the actual `readRange` they record one attempt (success
   and failure paths). `null` on the disabled path → zero work.
 - `RowGroupIterator` consumes the pending context at construction, publishes
@@ -102,7 +102,7 @@ on a failed property") is not met.**
 
 The doc asked the spike to compare `ExecutionSealedEvent` + source-side summary
 vs an authoritative `TracingInputFile` attempt record. The spike implemented the
-**first**: `CaptureContext` maintains a synchronized order-independent attempt
+**first**: `IoTraceContext` maintains a synchronized order-independent attempt
 accumulator and emits `ExecutionSealedEvent` at reader close. It works and is
 self-contained (no second authoritative record to reconcile), so the spike did
 not need the `TracingInputFile`-authoritative variant. The summary state is
@@ -174,7 +174,7 @@ standalone `ChunkHandle` an uncoalesced `SequentialFetchPlan` creates later in
 
 **Answer: store the post-coalescing identity on the plan; stamp the handle at
 creation.** `SequentialFetchPlan.setFirstReadCapture(...)` stashes the
-`CaptureContext` + `NodeIdentity`; `advanceChunk(0)` stamps them onto the
+`IoTraceContext` + `NodeIdentity`; `advanceChunk(0)` stamps them onto the
 handle it creates when (and only when) the first read is standalone. The
 region-backed (fused) case carries identity on the `SharedRegion` instead.
 
@@ -187,7 +187,7 @@ Conformance is checked by **two independent witnesses** per shape
 2. **`TracingInputFile` one-to-one matching** — an independent trace at the
    `InputFile` seam (generalizing `CountingInputFile` from counts to
    `(offset, length)` records) is matched one-to-one against the plan's final
-   nodes by `PlanConformance.matchOneToOne`: every node executed exactly once
+   nodes by `FetchPlanConformance.matchOneToOne`: every node executed exactly once
    with its exact range, no duplicates. The only unmatched reads are the three
    local metadata-stage footer reads, asserted exactly — the v0 data-stage
    plan does not model the metadata stage, and the fixture bounds it.

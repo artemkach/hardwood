@@ -38,7 +38,7 @@ class ObserverCaptureEndToEndTest {
 
     @Test
     void sequentialPlanFusesIntoOneNode() throws Exception {
-        StaticFetchPlan plan = CaptureHarness.captureWithObserver(
+        StaticFetchPlan plan = IoTraceHarness.captureWithObserver(
                 InputFile.of(SEQ_FILE), null, 1L);
 
         // 20 columns' first reads coalesce into a single fused data node,
@@ -54,7 +54,7 @@ class ObserverCaptureEndToEndTest {
 
     @Test
     void indexedPlanReconstructsAndConforms() throws Exception {
-        StaticFetchPlan plan = CaptureHarness.captureWithObserver(
+        StaticFetchPlan plan = IoTraceHarness.captureWithObserver(
                 InputFile.of(INDEXED_FILE),
                 ColumnProjection.columns("id", "value", "category"), 7L);
 
@@ -74,9 +74,9 @@ class ObserverCaptureEndToEndTest {
         ExecutorService pool = Executors.newFixedThreadPool(2);
         try {
             Future<StaticFetchPlan> a = pool.submit(() ->
-                    CaptureHarness.captureWithObserver(InputFile.of(SEQ_FILE), null, 100L));
+                    IoTraceHarness.captureWithObserver(InputFile.of(SEQ_FILE), null, 100L));
             Future<StaticFetchPlan> b = pool.submit(() ->
-                    CaptureHarness.captureWithObserver(
+                    IoTraceHarness.captureWithObserver(
                             InputFile.of(INDEXED_FILE),
                             ColumnProjection.columns("id", "value", "category"), 200L));
             StaticFetchPlan planA = a.get();

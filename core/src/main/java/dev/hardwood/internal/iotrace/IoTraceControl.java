@@ -7,14 +7,14 @@
  */
 package dev.hardwood.internal.iotrace;
 
-/// Thread-confined install handshake for wiring a [CaptureContext] into a
+/// Thread-confined install handshake for wiring a [IoTraceContext] into a
 /// reader without adding a supported public API.
 ///
 /// The performance-testing module installs a context, synchronously builds a
 /// reader (whose [dev.hardwood.internal.reader.RowGroupIterator]s consume the
 /// context *at construction*, on the build thread), then reads. The install
 /// `ThreadLocal` is only a transient channel for the synchronous build — the
-/// capture state itself lives on the [CaptureContext] and is carried onto the
+/// capture state itself lives on the [IoTraceContext] and is carried onto the
 /// iterator and request objects **by reference**, so it survives the
 /// virtual-thread / common-pool hand-offs that a `ThreadLocal` would not.
 ///
@@ -25,21 +25,21 @@ package dev.hardwood.internal.iotrace;
 /// execution. Concurrent readers each install their own context; they never
 /// share the pending slot because installation and consumption are confined
 /// to the installing thread.
-public final class CaptureControl {
+public final class IoTraceControl {
 
-    private static final ThreadLocal<CaptureContext> PENDING = new ThreadLocal<>();
+    private static final ThreadLocal<IoTraceContext> PENDING = new ThreadLocal<>();
 
-    private CaptureControl() {
+    private IoTraceControl() {
     }
 
     /// Installs a context for the current thread's next synchronous reader
     /// build. The returned scope clears the install slot; capture continues
     /// via the context reference the built reader now holds.
-    public static Scope install(CaptureContext context) {
+    public static Scope install(IoTraceContext context) {
         if (context == null) {
             throw new IllegalArgumentException("context must not be null");
         }
-        CaptureContext previous = PENDING.get();
+        IoTraceContext previous = PENDING.get();
         PENDING.set(context);
         return new Scope(previous);
     }
@@ -47,15 +47,15 @@ public final class CaptureControl {
     /// Returns the pending context for the current thread, or `null` if none
     /// is installed. Consumed at iterator construction; the disabled path sees
     /// `null` and does no capture work.
-    public static CaptureContext pending() {
+    public static IoTraceContext pending() {
         return PENDING.get();
     }
 
     public static final class Scope implements AutoCloseable {
 
-        private final CaptureContext previous;
+        private final IoTraceContext previous;
 
-        private Scope(CaptureContext previous) {
+        private Scope(IoTraceContext previous) {
             this.previous = previous;
         }
 

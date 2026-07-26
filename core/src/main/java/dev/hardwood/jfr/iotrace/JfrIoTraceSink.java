@@ -7,10 +7,10 @@
  */
 package dev.hardwood.jfr.iotrace;
 
-import dev.hardwood.internal.iotrace.CaptureSink;
+import dev.hardwood.internal.iotrace.IoTraceSink;
 import jdk.jfr.EventType;
 
-/// [CaptureSink] that delivers each capture record as a JFR event.
+/// [IoTraceSink] that delivers each capture record as a JFR event.
 ///
 /// The disabled-path guard is a **cached** `EventType.isEnabled()` check per
 /// event type: the instance method `Event.shouldCommit()` cannot guard its own
@@ -23,15 +23,15 @@ import jdk.jfr.EventType;
 /// Emission happens *from* the planning and execution sites (no capture object
 /// is injected across threads for delivery); the identity that lets an
 /// execution-side event name its node is carried on the request object by
-/// [dev.hardwood.internal.iotrace.CaptureContext], which is mechanism-neutral.
-public final class JfrCaptureSink implements CaptureSink {
+/// [dev.hardwood.internal.iotrace.IoTraceContext], which is mechanism-neutral.
+public final class JfrIoTraceSink implements IoTraceSink {
 
     // Whether the capture event family is enabled. Cached at construction; the
     // capture recording enables the whole family atomically before the sink is
     // used, so a single read here reflects the family state for the run.
     private final boolean enabled;
 
-    public JfrCaptureSink() {
+    public JfrIoTraceSink() {
         this.enabled = EventType.getEventType(PlanNodeEvent.class).isEnabled();
     }
 

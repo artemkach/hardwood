@@ -8,12 +8,12 @@
 package dev.hardwood.internal.iotrace;
 
 /// Plain carriers for the six capture record types, shared by the observer
-/// sink and the extractor. They mirror the [CaptureSink] method parameters
+/// sink and the extractor. They mirror the [IoTraceSink] method parameters
 /// one-to-one; the JFR sink maps the same fields onto JFR events, and both
 /// mechanisms reconstruct through the same [PlanExtractor] logic.
-public final class CaptureRecords {
+public final class IoTraceRecords {
 
-    private CaptureRecords() {
+    private IoTraceRecords() {
     }
 
     public record PlanNode(long executionId, long planId, long nodeId,

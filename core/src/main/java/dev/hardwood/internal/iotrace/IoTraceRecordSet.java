@@ -11,17 +11,17 @@ import java.util.List;
 
 /// A mechanism-neutral bundle of captured records for one recording, grouped
 /// by type. Both mechanisms materialize into this shape before extraction:
-/// the observer sink accumulates directly into a [RecordSet]; the JFR
+/// the observer sink accumulates directly into a [IoTraceRecordSet]; the JFR
 /// extractor parses a `.jfr` recording into one. [PlanExtractor] then applies
 /// identical reconstruction and validation to it regardless of origin, so the
 /// go/no-go properties are tested against one code path.
-public record RecordSet(
+public record IoTraceRecordSet(
         int schemaVersion,
         boolean dataLoss,
-        List<CaptureRecords.PlanNode> planNodes,
-        List<CaptureRecords.PlanRequirement> planRequirements,
-        List<CaptureRecords.PlanEdge> planEdges,
-        List<CaptureRecords.PlanSealed> planSeals,
-        List<CaptureRecords.Request> requests,
-        List<CaptureRecords.ExecutionSealed> executionSeals) {
+        List<IoTraceRecords.PlanNode> planNodes,
+        List<IoTraceRecords.PlanRequirement> planRequirements,
+        List<IoTraceRecords.PlanEdge> planEdges,
+        List<IoTraceRecords.PlanSealed> planSeals,
+        List<IoTraceRecords.Request> requests,
+        List<IoTraceRecords.ExecutionSealed> executionSeals) {
 }

@@ -18,10 +18,10 @@ import org.aesh.command.option.Mixin;
 import org.aesh.command.option.Option;
 
 import dev.hardwood.InputFile;
-import dev.hardwood.internal.iotrace.CaptureContext;
-import dev.hardwood.internal.iotrace.CaptureControl;
-import dev.hardwood.internal.iotrace.ObserverCaptureSink;
-import dev.hardwood.internal.iotrace.PlanConformance;
+import dev.hardwood.internal.iotrace.FetchPlanConformance;
+import dev.hardwood.internal.iotrace.IoTraceContext;
+import dev.hardwood.internal.iotrace.IoTraceControl;
+import dev.hardwood.internal.iotrace.ObserverIoTraceSink;
 import dev.hardwood.internal.iotrace.PlanExtractor;
 import dev.hardwood.internal.iotrace.ScenarioManifest;
 import dev.hardwood.internal.iotrace.StaticFetchPlan;
@@ -39,7 +39,7 @@ import dev.hardwood.schema.ColumnProjection;
 /// behavior (coalescing, prefetch, chunking) only materializes during a real
 /// read, so the command pays for a full decode to observe a faithful plan.
 @CommandDefinition(name = "iotrace", description = "Trace the I/O plan and reads performed to read a file.", generateHelp = true)
-public class IotraceCommand implements Command<CommandInvocation> {
+public class IoTraceCommand implements Command<CommandInvocation> {
 
     /// Execution ID for the CLI's single capture. Arbitrary but fixed —
     /// each invocation is one process with one execution.
@@ -104,11 +104,11 @@ public class IotraceCommand implements Command<CommandInvocation> {
 
     private CommandResult run(InputFile inputFile, int rowLimit) throws IOException {
         TracingInputFile traced = new TracingInputFile(inputFile);
-        ObserverCaptureSink sink = new ObserverCaptureSink();
-        CaptureContext context = CaptureContext.start(EXECUTION_ID, sink);
+        ObserverIoTraceSink sink = new ObserverIoTraceSink();
+        IoTraceContext context = IoTraceContext.start(EXECUTION_ID, sink);
 
         traced.open();
-        try (CaptureControl.Scope ignored = CaptureControl.install(context);
+        try (IoTraceControl.Scope ignored = IoTraceControl.install(context);
              ParquetFileReader reader = ParquetFileReader.open(traced);
              RowReader rowReader = RowLimits.buildRowReader(reader, parseProjection(), rowLimit)) {
             while (rowReader.hasNext()) {
@@ -118,23 +118,23 @@ public class IotraceCommand implements Command<CommandInvocation> {
 
         boolean remote = fileMixin.file.startsWith("s3://");
         if (traceOnly) {
-            System.out.print(IotraceRenderer.renderTrace(traced.reads(),
-                    PlanConformance.match(List.of(), traced.reads()), remote));
+            System.out.print(IoTraceRenderer.renderTrace(traced.reads(),
+                    FetchPlanConformance.match(List.of(), traced.reads()), remote));
             return CommandResult.SUCCESS;
         }
 
-        List<StaticFetchPlan> plans = IotraceRenderer.displayOrder(PlanExtractor.extract(
+        List<StaticFetchPlan> plans = IoTraceRenderer.displayOrder(PlanExtractor.extract(
                 sink.toRecordSet(), ScenarioManifest.singleUnknownPlans(EXECUTION_ID)));
 
         for (StaticFetchPlan plan : plans) {
-            System.out.print(IotraceRenderer.renderPlan(plan));
+            System.out.print(IoTraceRenderer.renderPlan(plan));
             System.out.println();
         }
 
-        PlanConformance.Result conformance = PlanConformance.match(plans, traced.reads());
-        System.out.print(IotraceRenderer.renderTrace(traced.reads(), conformance, remote));
+        FetchPlanConformance.Result conformance = FetchPlanConformance.match(plans, traced.reads());
+        System.out.print(IoTraceRenderer.renderTrace(traced.reads(), conformance, remote));
         System.out.println();
-        System.out.print(IotraceRenderer.renderSummary(EXECUTION_ID, plans, effectiveGap()));
+        System.out.print(IoTraceRenderer.renderSummary(EXECUTION_ID, plans, effectiveGap()));
 
         return conformance.isConformant() ? CommandResult.SUCCESS : CommandResult.FAILURE;
     }

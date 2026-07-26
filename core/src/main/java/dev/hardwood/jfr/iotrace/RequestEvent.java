@@ -23,7 +23,7 @@ import jdk.jfr.Timespan;
 /// but are excluded from the execution seal's structural hash.
 @Name("dev.hardwood.iotrace.Request")
 @Label("Request Attempt")
-@Category({"Hardwood", "Iotrace"})
+@Category({"Hardwood", "IO Trace"})
 @Description("One executed readRange attempt against a captured plan node")
 @Enabled(false)
 @StackTrace(false)

@@ -11,10 +11,10 @@ package dev.hardwood.internal.iotrace;
 ///
 /// The causal schema (the six record types below) is custom and shared; a
 /// sink is only responsible for *delivering* an already-formed record.
-/// [dev.hardwood.internal.iotrace.JfrCaptureSink] commits a JFR event per
-/// record; [dev.hardwood.internal.iotrace.ObserverCaptureSink] appends to an
+/// [dev.hardwood.internal.iotrace.JfrIoTraceSink] commits a JFR event per
+/// record; [dev.hardwood.internal.iotrace.ObserverIoTraceSink] appends to an
 /// in-memory list. The identity, canonical ordering, and seal-hash work all
-/// live above this seam in [CaptureContext], so switching mechanisms moves
+/// live above this seam in [IoTraceContext], so switching mechanisms moves
 /// only the delivery problem, never the identity problem.
 ///
 /// All fields are flat primitives or strings — JFR event payloads do not
@@ -22,8 +22,8 @@ package dev.hardwood.internal.iotrace;
 /// contract is constrained to what the weaker mechanism can express.
 ///
 /// A sink is invoked only when capture is enabled; the disabled path never
-/// reaches a sink (see [CaptureContext#enabled]).
-public interface CaptureSink {
+/// reaches a sink (see [IoTraceContext#enabled]).
+public interface IoTraceSink {
 
     /// A final request node in the published plan (emitted after
     /// `coalesceAcrossColumns()`). A fused region is one node serving several

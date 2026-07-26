@@ -20,9 +20,9 @@ import java.util.List;
 /// rather than failed outright — the trace legitimately contains
 /// metadata-stage reads (footer, index buffers) that the v0 data-stage plan
 /// does not model, and the caller bounds or displays those per fixture.
-public final class PlanConformance {
+public final class FetchPlanConformance {
 
-    private PlanConformance() {
+    private FetchPlanConformance() {
     }
 
     /// The one-to-one matching result. Conformant iff `missing` and

@@ -13,9 +13,9 @@ package dev.hardwood.internal.iotrace;
 /// is expressible under both the JFR sink and the observer sink. Values are
 /// contracts, not display labels — extraction compares them exactly, so they
 /// must not drift without a schema-version bump.
-public final class CaptureSchema {
+public final class IoTraceSchema {
 
-    private CaptureSchema() {
+    private IoTraceSchema() {
     }
 
     /// Schema version. Extraction rejects a recording produced by a different

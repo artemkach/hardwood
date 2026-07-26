@@ -11,8 +11,8 @@ import java.util.List;
 
 import org.junit.jupiter.api.Test;
 
-import dev.hardwood.internal.iotrace.CaptureSchema;
-import dev.hardwood.internal.iotrace.PlanConformance;
+import dev.hardwood.internal.iotrace.FetchPlanConformance;
+import dev.hardwood.internal.iotrace.IoTraceSchema;
 import dev.hardwood.internal.iotrace.StaticFetchPlan;
 import dev.hardwood.internal.iotrace.TracingInputFile;
 
@@ -20,23 +20,23 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /// Renderer unit tests against hand-built plans: fused (with a dead gap),
 /// split, incomplete, and empty shapes, plus conformance verdict rendering.
-class IotraceRendererTest {
+class IoTraceRendererTest {
 
     private static StaticFetchPlan fusedWithGap() {
         // One node [0, 300) serving requirements [0,100) and [200,100):
         // bytes [100, 200) are dead gap fetched by the fused node.
         return new StaticFetchPlan(1, 0,
-                List.of(new StaticFetchPlan.Node(1, 0, 300, CaptureSchema.STAGE_DATA, "fused")),
+                List.of(new StaticFetchPlan.Node(1, 0, 300, IoTraceSchema.STAGE_DATA, "fused")),
                 List.of(new StaticFetchPlan.Requirement(1, 1, 0, 100, "col a"),
                         new StaticFetchPlan.Requirement(2, 1, 200, 100, "col b")),
                 List.of(),
-                CaptureSchema.STATUS_SUPPORTED, "", "h");
+                IoTraceSchema.STATUS_SUPPORTED, "", "h");
     }
 
     @Test
     void fusedBarShowsUsefulAndDeadBytes() {
         StaticFetchPlan plan = fusedWithGap();
-        String bar = IotraceRenderer.renderBar(plan, 0, 300);
+        String bar = IoTraceRenderer.renderBar(plan, 0, 300);
         // First third useful, middle third dead, last third useful.
         assertThat(bar).hasSize(64);
         assertThat(bar.charAt(0)).isEqualTo('█');
@@ -48,13 +48,13 @@ class IotraceRendererTest {
     void unplannedSpaceRendersBlank() {
         // Two standalone nodes with unplanned space between them.
         StaticFetchPlan plan = new StaticFetchPlan(1, 0,
-                List.of(new StaticFetchPlan.Node(1, 0, 100, CaptureSchema.STAGE_DATA, "a"),
-                        new StaticFetchPlan.Node(2, 200, 100, CaptureSchema.STAGE_DATA, "b")),
+                List.of(new StaticFetchPlan.Node(1, 0, 100, IoTraceSchema.STAGE_DATA, "a"),
+                        new StaticFetchPlan.Node(2, 200, 100, IoTraceSchema.STAGE_DATA, "b")),
                 List.of(new StaticFetchPlan.Requirement(1, 1, 0, 100, "a"),
                         new StaticFetchPlan.Requirement(2, 2, 200, 100, "b")),
                 List.of(),
-                CaptureSchema.STATUS_SUPPORTED, "", "h");
-        String bar = IotraceRenderer.renderBar(plan, 0, 300);
+                IoTraceSchema.STATUS_SUPPORTED, "", "h");
+        String bar = IoTraceRenderer.renderBar(plan, 0, 300);
         assertThat(bar.charAt(0)).isEqualTo('█');
         assertThat(bar.charAt(32)).isEqualTo(' ');
         assertThat(bar.charAt(63)).isEqualTo('█');
@@ -63,8 +63,8 @@ class IotraceRendererTest {
     @Test
     void incompletePlanIsLabeled() {
         StaticFetchPlan plan = new StaticFetchPlan(1, 2, List.of(), List.of(), List.of(),
-                CaptureSchema.STATUS_INCOMPLETE, "head(5) truncation", "h");
-        String out = IotraceRenderer.renderPlan(plan);
+                IoTraceSchema.STATUS_INCOMPLETE, "head(5) truncation", "h");
+        String out = IoTraceRenderer.renderPlan(plan);
         assertThat(out).contains("Plan 2");
         assertThat(out).contains("INCOMPLETE: head(5) truncation");
         assertThat(out).contains("no data-stage nodes");
@@ -72,7 +72,7 @@ class IotraceRendererTest {
 
     @Test
     void fusedNodeTableNamesRequirementCount() {
-        String out = IotraceRenderer.renderPlan(fusedWithGap());
+        String out = IoTraceRenderer.renderPlan(fusedWithGap());
         assertThat(out).contains("2 requirements (fused)");
     }
 
@@ -82,8 +82,8 @@ class IotraceRendererTest {
         List<TracingInputFile.TracedRead> trace = List.of(
                 new TracingInputFile.TracedRead(9000, 8),      // metadata
                 new TracingInputFile.TracedRead(0, 300));      // node 1
-        PlanConformance.Result result = PlanConformance.match(plan, trace);
-        String out = IotraceRenderer.renderTrace(trace, result, false);
+        FetchPlanConformance.Result result = FetchPlanConformance.match(plan, trace);
+        String out = IoTraceRenderer.renderTrace(trace, result, false);
         assertThat(out).contains("Conformance: OK");
         assertThat(out).contains("node 1");
         assertThat(out).contains("metadata");
@@ -93,15 +93,15 @@ class IotraceRendererTest {
     @Test
     void missingExecutionRendersFailure() {
         StaticFetchPlan plan = fusedWithGap();
-        PlanConformance.Result result = PlanConformance.match(plan, List.of());
-        String out = IotraceRenderer.renderTrace(List.of(), result, false);
+        FetchPlanConformance.Result result = FetchPlanConformance.match(plan, List.of());
+        String out = IoTraceRenderer.renderTrace(List.of(), result, false);
         assertThat(out).contains("Conformance: FAILED");
         assertThat(out).contains("missing execution for node 1");
     }
 
     @Test
     void summaryReportsOverFetch() {
-        String out = IotraceRenderer.renderSummary(1, List.of(fusedWithGap()), 64 * 1024);
+        String out = IoTraceRenderer.renderSummary(1, List.of(fusedWithGap()), 64 * 1024);
         assertThat(out).contains("SUPPORTED");
         assertThat(out).contains("nodes          1");
         assertThat(out).contains("requirements 2");

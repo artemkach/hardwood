@@ -13,8 +13,8 @@ import java.util.List;
 
 import dev.hardwood.cli.internal.Sizes;
 import dev.hardwood.cli.internal.table.RowTable;
-import dev.hardwood.internal.iotrace.CaptureSchema;
-import dev.hardwood.internal.iotrace.PlanConformance;
+import dev.hardwood.internal.iotrace.FetchPlanConformance;
+import dev.hardwood.internal.iotrace.IoTraceSchema;
 import dev.hardwood.internal.iotrace.StaticFetchPlan;
 import dev.hardwood.internal.iotrace.TracingInputFile;
 
@@ -23,7 +23,7 @@ import dev.hardwood.internal.iotrace.TracingInputFile;
 /// arrival-ordered trace with each read matched to its node, and a summary
 /// block. Pure string building over immutable inputs, so it is unit-testable
 /// against hand-built plans without touching a file.
-final class IotraceRenderer {
+final class IoTraceRenderer {
 
     /// Width of the layout bar in characters.
     private static final int BAR_WIDTH = 64;
@@ -32,7 +32,7 @@ final class IotraceRenderer {
     private static final char FILL_DEAD = '░';     // ░ dead gap bytes inside a fused node
     private static final char FILL_UNPLANNED = ' ';     // bytes no node fetches
 
-    private IotraceRenderer() {
+    private IoTraceRenderer() {
     }
 
     /// Renders one plan: header, layout map, node table.
@@ -118,7 +118,7 @@ final class IotraceRenderer {
     /// Renders the arrival-ordered trace with node correlation and the
     /// conformance verdict.
     static String renderTrace(List<TracingInputFile.TracedRead> trace,
-                              PlanConformance.Result conformance,
+                              FetchPlanConformance.Result conformance,
                               boolean remote) {
         StringBuilder sb = new StringBuilder();
         sb.append("Trace (").append(trace.size()).append(" reads at the InputFile seam, arrival order)\n");
@@ -159,8 +159,8 @@ final class IotraceRenderer {
         return sb.toString();
     }
 
-    private static String label(TracingInputFile.TracedRead read, PlanConformance.Result conformance) {
-        for (PlanConformance.MatchedNode m : conformance.matched()) {
+    private static String label(TracingInputFile.TracedRead read, FetchPlanConformance.Result conformance) {
+        for (FetchPlanConformance.MatchedNode m : conformance.matched()) {
             if (m.read().equals(read)) {
                 return "node " + m.node().nodeId();
             }
@@ -180,11 +180,11 @@ final class IotraceRenderer {
                 .append(plans.size()).append(" plan(s))\n");
         sb.append("  status         ");
         if (incomplete == 0) {
-            sb.append(CaptureSchema.STATUS_SUPPORTED);
+            sb.append(IoTraceSchema.STATUS_SUPPORTED);
         }
         else {
             sb.append(incomplete).append(" of ").append(plans.size())
-                    .append(" plans ").append(CaptureSchema.STATUS_INCOMPLETE);
+                    .append(" plans ").append(IoTraceSchema.STATUS_INCOMPLETE);
         }
         sb.append('\n');
         long nodes = plans.stream().mapToLong(p -> p.nodes().size()).sum();

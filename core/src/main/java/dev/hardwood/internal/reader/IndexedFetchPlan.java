@@ -16,7 +16,7 @@ import java.util.NoSuchElementException;
 import java.util.concurrent.CompletableFuture;
 
 import dev.hardwood.internal.FetchReason;
-import dev.hardwood.internal.iotrace.CaptureContext;
+import dev.hardwood.internal.iotrace.IoTraceContext;
 import dev.hardwood.internal.iotrace.NodeIdentity;
 import dev.hardwood.jfr.RowGroupScannedEvent;
 import dev.hardwood.metadata.ColumnChunk;
@@ -112,7 +112,7 @@ final class IndexedFetchPlan implements FetchPlan, RowGroupIterator.CoalescableF
     }
 
     @Override
-    public void setFirstReadCapture(CaptureContext context, NodeIdentity identity) {
+    public void setFirstReadCapture(IoTraceContext context, NodeIdentity identity) {
         if (!chunkHandles.isEmpty()) {
             chunkHandles.get(0).setCapture(context, identity);
         }

@@ -14,10 +14,10 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 import dev.hardwood.InputFile;
-import dev.hardwood.internal.iotrace.CaptureContext;
-import dev.hardwood.internal.iotrace.CaptureControl;
+import dev.hardwood.internal.iotrace.IoTraceContext;
+import dev.hardwood.internal.iotrace.IoTraceControl;
+import dev.hardwood.internal.iotrace.IoTraceRecordSet;
 import dev.hardwood.internal.iotrace.PlanExtractor;
-import dev.hardwood.internal.iotrace.RecordSet;
 import dev.hardwood.internal.iotrace.ScenarioManifest;
 import dev.hardwood.internal.iotrace.StaticFetchPlan;
 import dev.hardwood.reader.ParquetFileReader;
@@ -53,15 +53,15 @@ class JfrCaptureRoundTripTest {
 
             // Construct the sink AFTER enabling + starting, so its cached
             // EventType.isEnabled() guard reads `true`.
-            JfrCaptureSink sink = new JfrCaptureSink();
-            CaptureContext context = CaptureContext.start(executionId, sink);
+            JfrIoTraceSink sink = new JfrIoTraceSink();
+            IoTraceContext context = IoTraceContext.start(executionId, sink);
             readUnderCapture(context);
 
             recording.stop();
             recording.dump(dump);
         }
 
-        RecordSet records = JfrRecordingReader.read(dump);
+        IoTraceRecordSet records = JfrRecordingReader.read(dump);
         assertThat(records.dataLoss()).isFalse();
 
         StaticFetchPlan plan = PlanExtractor.extractSingle(records, ScenarioManifest.single(executionId));
@@ -88,15 +88,15 @@ class JfrCaptureRoundTripTest {
             recording.enable("dev.hardwood.FileOpened");
             recording.start();
 
-            JfrCaptureSink sink = new JfrCaptureSink();
-            CaptureContext context = CaptureContext.start(executionId, sink);
+            JfrIoTraceSink sink = new JfrIoTraceSink();
+            IoTraceContext context = IoTraceContext.start(executionId, sink);
             readUnderCapture(context);
 
             recording.stop();
             recording.dump(dump);
         }
 
-        RecordSet records = JfrRecordingReader.read(dump);
+        IoTraceRecordSet records = JfrRecordingReader.read(dump);
         assertThat(records.planNodes()).isEmpty();
         assertThat(records.planSeals()).isEmpty();
         assertThat(records.requests()).isEmpty();
@@ -112,10 +112,10 @@ class JfrCaptureRoundTripTest {
         recording.enable(ExecutionSealedEvent.class);
     }
 
-    private static void readUnderCapture(CaptureContext context) throws IOException {
+    private static void readUnderCapture(IoTraceContext context) throws IOException {
         InputFile file = InputFile.of(SEQ_FILE);
         file.open();
-        try (CaptureControl.Scope ignored = CaptureControl.install(context);
+        try (IoTraceControl.Scope ignored = IoTraceControl.install(context);
              ParquetFileReader reader = ParquetFileReader.open(file);
              RowReader rows = reader.rowReader()) {
             while (rows.hasNext()) {

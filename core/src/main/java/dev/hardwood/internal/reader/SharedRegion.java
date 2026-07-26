@@ -15,7 +15,7 @@ import java.util.concurrent.CompletableFuture;
 import dev.hardwood.InputFile;
 import dev.hardwood.internal.ExceptionContext;
 import dev.hardwood.internal.FetchReason;
-import dev.hardwood.internal.iotrace.CaptureContext;
+import dev.hardwood.internal.iotrace.IoTraceContext;
 import dev.hardwood.internal.iotrace.NodeIdentity;
 
 /// A contiguous, multi-column byte range fetched in a single
@@ -47,7 +47,7 @@ public final class SharedRegion {
     /// capture is disabled. The region is the final request object in the
     /// fused case (several columns' first reads served by one GET), so it
     /// carries the node identity that the columns' handles delegate to.
-    private volatile CaptureContext captureContext;
+    private volatile IoTraceContext captureContext;
     private volatile NodeIdentity captureIdentity;
 
     public SharedRegion(InputFile inputFile, long fileOffset, int length, String purpose) {
@@ -74,7 +74,7 @@ public final class SharedRegion {
 
     /// Attaches capture identity so this region's `readRange` is recorded as
     /// an attempt against the published (fused) node.
-    public void setCapture(CaptureContext context, NodeIdentity identity) {
+    public void setCapture(IoTraceContext context, NodeIdentity identity) {
         this.captureContext = context;
         this.captureIdentity = identity;
     }
@@ -131,7 +131,7 @@ public final class SharedRegion {
             }
             String outer = FetchReason.current();
             String composed = "unattributed".equals(outer) ? purpose : outer + " | " + purpose;
-            CaptureContext capture = captureContext;
+            IoTraceContext capture = captureContext;
             long begin = capture != null ? System.nanoTime() : 0L;
             try (FetchReason.Scope ignored = FetchReason.set(composed)) {
                 data = inputFile.readRange(fileOffset, length);

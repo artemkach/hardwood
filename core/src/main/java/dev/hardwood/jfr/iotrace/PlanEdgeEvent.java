@@ -20,7 +20,7 @@ import jdk.jfr.StackTrace;
 /// change.
 @Name("dev.hardwood.iotrace.PlanEdge")
 @Label("Plan Edge")
-@Category({"Hardwood", "Iotrace"})
+@Category({"Hardwood", "IO Trace"})
 @Description("A scheduling dependency between two final request nodes")
 @Enabled(false)
 @StackTrace(false)
