@@ -391,13 +391,17 @@ Three lessons, each of which the lab's design anticipates:
 1. **The verdict is conditional.** Fusion won on the distant path, tied
    nearby, and is irrelevant locally. No constant is right everywhere —
    the experimental object is the *map of conditions*, not a threshold.
-2. **The naive model mispredicts, and the misprediction is informative.**
-   Under the first cost model (per-connection bandwidth, no aggregate
-   term), the split plan should have won the distant cell: seven parallel
-   requests, each avoiding nothing but sharing the work. It lost — the
-   seven TCP streams divided one long network path instead of stacking.
-   The divergence names the missing model term. That is the intended
-   workflow: divergences are findings that improve the model.
+2. **The demo found a case the first cost model cannot reproduce.** The
+   split plan lost the distant cell despite genuine 5x parallelism — the
+   seven TCP streams divided one long network path instead of stacking. A
+   per-connection model of the `L + bytes/B` shape has no term for that
+   sharing, so it cannot rank this cell correctly whatever its parameters.
+   (No scorer run was made against these captures — the gap is analytical,
+   from the model's declared shape.) The measurement caught this on day
+   one; the model starts life with one known limit and one candidate term
+   to add. Whether the model then earns its keep — screening candidates
+   cheaply where it has been validated — is what the pilot experiment
+   (Appendix D) is designed to establish.
 3. **The trace shows where time actually goes.** The timing columns made
    the S3 footer-caching effect visible (metadata costs one round trip,
    not three) and identified the critical-path request in the split runs.
@@ -1249,9 +1253,10 @@ rather than a winner.)
    (per-flow throughput degrades with ~235 ms RTT; the exact mechanism is
    a lane-3 question). Its 5.4x overlap was real parallelism with no
    bandwidth gain to pay for the extra request startups — so fusion won.
-   The first cost model (per-connection bandwidth, no aggregate term)
-   would have predicted the opposite; the divergence names the missing
-   term.
+   A per-connection cost model with no aggregate term has no way to
+   reproduce this ranking, whatever its parameters (analytically, from
+   its shape — no scorer run was made against these captures). An
+   aggregate or RTT-sensitive bandwidth term is the candidate addition.
 2. **Neighboring region: the ceiling rises ~8x and the verdict changes.**
    Aggregate throughput barely differed between contenders; wall clocks
    tied within noise. With transfer cheap, latency and the critical path
