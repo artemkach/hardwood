@@ -1,4 +1,4 @@
-# Perflab: measuring Hardwood's I/O decisions instead of guessing them
+# Perflab: evidence for I/O planning decisions (#TBD)
 
 - **Status:** draft, seeking early feedback on the idea and its scope
 - **Tracking issue:** TBD
