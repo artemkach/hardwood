@@ -1,7 +1,6 @@
-# Perflab: evidence for I/O planning decisions (#TBD)
+# Perflab: evidence for I/O planning decisions (#827)
 
 - **Status:** draft, seeking early feedback on the idea and its scope
-- **Tracking issue:** TBD
 - **Proof of concept:** [`artemkach/hardwood`, branch `capture`](https://github.com/artemkach/hardwood/tree/capture) — nothing merged or final
 
 ---
