@@ -56,6 +56,7 @@ scope — not approval of the proof of concept as-is.
 - [Appendix C: transport calibration protocol](#appendix-c-transport-calibration-protocol-lane-2)
 - [Appendix D: the pilot experiment](#appendix-d-the-pilot-experiment)
 - [Appendix E: demo runs — outputs and findings](#appendix-e-demo-runs--outputs-and-findings)
+- [Appendix F: the row-group-count experiment](#appendix-f-the-row-group-count-experiment)
 - [Sources](#sources)
 
 ---
@@ -138,9 +139,9 @@ again (Appendix B works it through). One distinction worth keeping in mind
 throughout: today these thresholds are **fixed configuration** — identical
 for every file and backend. #763's end state makes some of them **runtime
 decisions**, informed by what the storage actually costs, possibly refined
-from live measurements the way DuckDB does. The lab's job is to supply the
-evidence for that transition; it does not itself change any production
-behavior.
+from live measurements the way DuckDB now does in shipped code (§5.3). The
+lab's job is to supply the evidence for that transition; it does not itself
+change any production behavior.
 
 ### 5.2 The questions
 
@@ -158,6 +159,14 @@ able to answer:
    term is missing?
 5. Can a candidate planner change be screened cheaply — in microseconds of
    arithmetic — before anyone spends a day benchmarking it?
+6. How much of the answer is about gap tuning at all? Hardwood plans one row
+   group at a time (§5.1) and prefetches strictly one-ahead, so the number of
+   requests it can have in flight is bounded by the projected column count of
+   the current row group. DuckDB's published row-group-size sweep (§5.3
+   sources) shows that same bound costing up to 12x on identical data once row
+   groups grow large enough that too few requests exist to fill the link.
+   Read-ahead *depth* may dominate the threshold question the lab was built to
+   answer; Appendix F is the experiment that would tell us.
 
 ### 5.3 Prior art
 
@@ -170,7 +179,7 @@ and few come with any recorded reasoning:
 |---|---|---|
 | Hadoop S3A (vectored IO) | 4 KiB | no derivation found |
 | Arrow C++ | 8 KiB default; optional `latency × bandwidth` helper | helper exposed, no reader calls it automatically |
-| DuckDB | 16 KiB static; **dynamic `latency × bandwidth`**, clamped, refined from measured throughput | in-reader cost model |
+| DuckDB (`v2.0.0-dev`) | 16 KiB static until the first measurement, then **`latency × bandwidth`** clamped to `[4 KiB, 32 MiB]`, EWMA-smoothed | in-reader cost model fed by an online estimator; also pinnable as a user setting |
 | Velox | 512 KiB | constant in config |
 | arrow-rs | 1 MiB | constant, no derivation |
 | ClickHouse | 4 MiB (inverted: min bytes worth a seek) | constant |
@@ -183,6 +192,66 @@ request's startup latency. DuckDB goes further and refines the estimate at
 runtime from measured throughput — the fixed-configuration versus
 runtime-decision distinction from §5.1, with DuckDB the only surveyed
 reader on the runtime side.
+
+DuckDB's version is worth reading closely, because it is the closest thing
+to #763's end state that exists in shipped code, and it is specific where
+this design is still deciding. The model is `gap = L × B`, clamped to
+`[GAP_MIN = 4 KiB, GAP_MAX = 32 MiB]`, with non-positive and NaN results
+falling to the floor. `(L, B)` are smoothed with an exponentially weighted
+moving average (α = 0.5) and are seeded empty, so the first row group of any
+scan uses the 16 KiB static default and only later row groups see a measured
+gap. The threshold is also exposed as an ordinary user setting
+(`parquet_prefetch_column_gap`), clamped by `GAP_MAX`, where `0` means never
+merge — relevant to this design's own override question (§9, question 3).
+
+**Where the two numbers come from is the more transferable part, and DuckDB
+uses two different estimators depending on what the transport can report.**
+On the remote path, each completed range request contributes a sample of
+`(total_seconds, bytes, ttfb_seconds)`: latency is smoothed straight from
+measured time-to-first-byte, and bandwidth is `bytes / (total − ttfb)`,
+updated only for samples of at least 64 KiB so small reads cannot corrupt
+the rate term. On the local path there is no time-to-first-byte to observe,
+so the estimator instead **fits a line by least squares** over the handle's
+own reads — `total_time = intercept + slope × bytes`, taking `L = intercept`
+and `B = 1 / slope`. That fit refuses to produce an estimate until it has
+seen at least two reads *of different sizes*, for the reason its own comment
+gives: with one size, the fixed and per-byte costs are not separately
+identifiable. Both estimators are per-file-handle and reject degenerate fits
+(non-positive latency, bandwidth, or slope) rather than reporting a number
+they cannot justify.
+
+Three things follow for Hardwood. First, `L + bytes/B` is not just this
+lab's modeling convention — it is the functional form a production reader
+found sufficient to act on, which is mild evidence that the first cost model
+(§8.5) is shaped correctly even though it is deliberately thin. Second, the
+TTFB split is available to Hardwood essentially for free: `S3InputFile`
+already receives an `HttpResponse<InputStream>`, so `send()` returns when
+headers arrive and the body is drained afterwards in a read loop — two
+timestamps at that existing seam separate `L` from `B` with no extra request
+and no regression fit. That is a concrete note for #763 step 4, not
+something this lab needs. Third, the identifiability constraint is a real
+limit on any online refinement, not a detail: a fetch plan that only ever
+issues one read size cannot calibrate itself, which is why the transport
+lane's calibration sweeps several sizes (Appendix C) rather than measuring
+one.
+
+**A caution about scope that the same code delivers:** in DuckDB the gap is
+no longer the only planning decision, and arguably no longer the interesting
+one. Per row group it also chooses a *strategy* — fetch the whole row group's
+span as one request with merging disabled; fetch filter columns first and the
+payload only for row groups that survive; or register each column separately
+with merging enabled — gated on how much of the span is actually being
+scanned (a 95% threshold) and on how selective filters have proven to be so
+far in this scan (a 90% match-ratio threshold, accumulated across row
+groups). The selection is stateful and carries across recycled scan states,
+so early row groups run "unlearned" and later ones do not. This design keeps
+its scope at thresholds deliberately (§4), and that stays right for a first
+increment — but it means the captured plan artifact should record *which
+policy produced it*, not only the byte ranges that resulted, or a future
+comparison between two policies will be indistinguishable from a comparison
+between two threshold values. §8.9's experiment record already has a
+"contender: planner configuration and effective settings" row; this is the
+argument for keeping it and populating it honestly from the start.
 
 The formula comes with a catch, though, worked through in Appendix B: it
 describes the *serial* case. When split requests genuinely run in
@@ -199,10 +268,36 @@ defaults for a same-region profile, though not universal constants.
 
 Finally, a search across the usual suspects (Iceberg, Trino, Velox,
 parquet-java, arrow-rs, Arrow C++, DuckDB, DataFusion, and others) found
-latency-injection test utilities and in-reader cost models, but no
-reusable harness that captures a reader's fetch plans and evaluates them
-offline under declared cost models. That specific shape appears to be new
-— stated carefully: new among the projects searched.
+latency-injection test utilities, in-reader cost models, and — in DuckDB's
+case — a shipped plan-capture surface. What it did not find is a harness
+that captures a reader's fetch plans and then **prices them offline under
+declared cost models**, or one that treats capture completeness as something
+to be proven rather than assumed. Those two pieces appear to be new, stated
+carefully: new among the projects searched.
+
+The DuckDB precedent is worth stating explicitly rather than buried, because
+it validates half of this design's instinct. DuckDB emits one structured
+record per row group under a named log channel (`ParquetPrefetch`), queryable
+as an ordinary table, carrying the file, row group, chosen strategy, the
+accepted gap in bytes, the physical column-name batches actually issued in
+order, and which filters ran. Columns that ride along inside a fetched range
+without having been requested are marked in that output — independently
+arriving at this design's over-fetch accounting (§7.2). The fields are
+populated only when the channel is enabled, which is the same
+inert-when-disabled discipline as §8.1. So "publish the planner's decisions
+as structured, machine-readable records" is not an exotic idea; it is what
+the one surveyed reader with an adaptive policy also concluded it needed, and
+it is a point in favour of shipping `hardwood iotrace` rather than keeping it
+a private tool (§9, question 2).
+
+What DuckDB's capture does not have is any notion of completeness: no seals,
+no manifest, no independent trace to conform against, and therefore no way
+to distinguish a decision that was never made from a record that was never
+written. Its tests assert on the log directly and accept that (§10 borrows
+the assertion pattern, which is good). Nothing prices a captured plan under
+a stated `(L, B, concurrency)` triple, and nothing sweeps conditions — the
+model is consulted online and its output is observed, never replayed. Those
+are the parts this design adds.
 
 ### 5.4 The simulation–emulation continuum
 
@@ -214,7 +309,7 @@ and blind spot:
 |---|---|---|---|
 | Fixed policy, no measurement | most surveyed readers | cheap, predictable | assumptions stay implicit |
 | Cost model | Arrow C++, DuckDB, the lab's scorer | fast sweeps, deterministic | omits every mechanism outside the model |
-| Controlled delay | arrow-rs `ThrottledStore`, #763's benchmark | runs the real planner and reader | replaces the transport with a formula |
+| Controlled delay | DuckDB `debug_fs`, arrow-rs `ThrottledStore`, #763's benchmark | runs the real planner and reader | replaces the transport with a formula |
 | Emulated transport | Arrow's MinIO benchmark, S3Proxy + impairment | exercises the client, sockets, pools | not a real cloud service |
 | Real service | AnyBlob, manual S3 runs | the full path | slow, noisy, hard to command |
 
@@ -222,6 +317,28 @@ Each step down gains realism and loses control. The lab's central
 discipline is to use the fast end for exploration and the slow end for
 confirmation — and to treat disagreements between adjacent methods as
 findings about what the faster method's model is missing.
+
+DuckDB's `debug_fs` is the most developed instance of the controlled-delay
+row and is worth measuring this design against, in both directions. It is a
+pass-through filesystem decorator that delays open, read, and write — never
+metadata operations — by a sample drawn from a **lognormal distribution
+moment-matched to a requested mean and standard deviation**, with the random
+seed pinnable and logged so a run can be reproduced exactly. A zero mean is a
+fast-path no-op. That is two things #763's sketch and §8.7 do not have: a
+latency *distribution* rather than a constant (Appendix B currently lists
+tails as an unmodeled omission), and a way to keep a stochastic injector
+deterministic. §8.7 adopts both.
+
+In the other direction, `debug_fs` injects latency only — there is no
+`bytes/B` term, so it cannot express a bandwidth-bound regime at all — and
+its throughput-estimate hook simply delegates to the underlying filesystem.
+Injected latency therefore never reaches DuckDB's own cost model, which means
+DuckDB cannot test "the policy responds correctly to a declared storage
+profile" end to end; its cost-model tests use a real remote endpoint and
+assert loose bounds instead (§10). Closing exactly that loop — a declared
+profile that both the injector and the scorer consume — is what lane 1 is
+for, and it is the sharpest available answer to why this lab is more than a
+latency decorator.
 
 ---
 
@@ -406,7 +523,11 @@ Three lessons, each of which the lab's design anticipates:
    not three) and identified the critical-path request in the split runs.
    On local files it showed something else: `readRange` returns a mapping
    slice and the page faults happen later during decode — so the seam is
-   the right place to study remote requests, not local storage cost.
+   the right place to study remote requests, not local storage cost. That
+   observation turns out to have a price attached, discussed in Appendix E
+   finding 6: because the faults land inside decode, there is nothing for
+   read-ahead to overlap locally, and DuckDB's cold-local numbers suggest
+   what that forecloses.
 
 This was one afternoon of unstructured exploration with a single command —
 the sort of thing the lab is meant to make routine.
@@ -574,6 +695,17 @@ and explicitly deferred (§9). Real-endpoint runs (lane 3) are the
 calibration source for profile values; the model sweeps between and beyond
 the measured points.
 
+One external anchor is worth recording for the aggregate-bandwidth term the
+demo showed to be missing (§7.2, Appendix E finding 1). DuckDB's published
+same-region measurements on a 25 Gbit/s EC2 instance report the link "almost
+fully saturated" once enough requests are in flight, against roughly 5 Gbit/s
+for the synchronous predecessor, with the line rate independently confirmed
+by a second tool rather than assumed. That gives a concrete same-region
+ceiling to sweep against and a demonstration that the ceiling is reachable —
+which is what distinguishes "the model omits an aggregate term" from "the
+aggregate term never binds." It is someone else's host and someone else's
+client, so it calibrates nothing here; it bounds the range worth sweeping.
+
 ### 8.7 The sleep-mode benchmark (#763 step 1, as specified)
 
 A decorator that sleeps `L + bytes/B` before delegating `readRange`,
@@ -588,6 +720,26 @@ scheduler and JIT. Reproducible in expectation; suitable for paired
 comparisons under a predeclared decision rule; not deterministic. What
 *is* deterministic — request counts, byte totals, plan shapes — becomes
 plain JUnit assertions that run on every commit.
+
+Two refinements borrowed from DuckDB's `debug_fs` (§5.4), both cheap and both
+strictly optional over the constant-latency version:
+
+- **Draw the latency term from a distribution, seeded.** A lognormal
+  moment-matched to a requested `(mean, stddev)` gives a positive,
+  right-skewed sample that reduces to exactly today's constant `L` when
+  `stddev = 0`, so it is a superset rather than a change of behavior. The
+  point is not realism for its own sake: latency tails are on Appendix B's
+  omissions list, and a plan whose critical path is one long request behaves
+  differently under a tail than under a mean.
+- **Pin and record the seed.** With the seed fixed, the injected component of
+  a run is deterministic again and host scheduling is the only remaining
+  source of variance — which sharpens the paired comparison in §8.9 and makes
+  a surprising result re-runnable rather than merely re-samplable. The seed
+  belongs in the experiment record (§8.9) alongside the profile.
+
+Delay is injected at `readRange` only, never at metadata operations,
+matching `debug_fs`'s split for the same reason: mixing the two makes the
+metadata stage's cost a function of the injector rather than of the plan.
 
 The fused/split contenders come from the real planner via a test-scoped
 gap override (`hardwood.internal.maxCrossColGapBytes`, matching the two
@@ -630,6 +782,17 @@ evidence** — request counts, byte totals, connection counts — which is
 nearly noise-free on any machine. Wall clock confirms a structurally
 explained result; it doesn't carry the whole claim.
 
+Structural evidence in that sense presumes a *fixed* policy: with the gap a
+compile-time constant, a given fixture and projection produce one exact
+request count on every machine forever. The moment a threshold becomes a
+runtime decision — the transition this lab exists to enable — those counts
+become machine-dependent and that category quietly empties. The replacement
+is a third kind of evidence, neither a fixed shape nor a timing: **invariants
+on the decision itself**, asserting that it started from its declared
+default, stayed inside its declared clamp, and demonstrably responded to its
+input, without asserting which value it responded with. §10 sets out the
+concrete form, borrowed from DuckDB's tests for exactly this problem.
+
 Each experiment binds its question, inputs, evidence, and result into one
 versioned record, so a result can be audited and compared later:
 
@@ -637,7 +800,7 @@ versioned record, so a result can be audited and compared later:
 |---|---|
 | Scenario | fixture and source hashes, projection, filters, row limit, correctness digest |
 | Contender | planner configuration and effective settings |
-| Profile | latency, bandwidth, concurrency, source, named omissions |
+| Profile | latency, bandwidth, concurrency, source, named omissions; injection distribution and random seed where one was used |
 | Plan evidence | plan hash, capture status, conformance status, requests, useful bytes, over-fetch |
 | Execution evidence | method/lane, cache and connection state, raw timings, calibration reference |
 | Decision | practical-equivalence threshold and the resulting classification |
@@ -694,11 +857,20 @@ Early feedback is most valuable on these:
    any file. Should it ship as a supported command, or stay a development
    tool? (Related: is the `iotrace` name agreeable — it also names the JFR
    event namespace, which becomes a de-facto contract once recordings
-   exist.)
+   exist.) One data point in favour of shipping: DuckDB exposes the
+   equivalent as a supported, queryable log channel rather than a private
+   tool, and its own tests depend on it (§5.3).
 3. **The gap override.** Comparing fused and split plans on identical bytes
    needs a test-scoped override for the cross-column gap. A system property
    matching the two existing sibling knobs is the two-line version; an
-   internal policy object is the cleaner one. Preference?
+   internal policy object is the cleaner one. Preference? A third option now
+   has precedent: DuckDB ships its equivalent as an ordinary user setting,
+   clamped to the model's own ceiling, with `0` meaning never merge (§5.3) —
+   which makes the override a supported escape hatch for users stuck with a
+   pathological layout rather than test-only scaffolding. That is a larger
+   commitment than this increment needs, but it is the direction a later
+   adaptive policy would want, and choosing the test-only shape now should be
+   a deliberate decision rather than a default.
 4. **Toxiproxy now or later?** The existing S3Proxy container already
    provides configurable latency, but its bandwidth throttle is broken
    (Appendix C), so a bandwidth-controlled transport lane means adding one
@@ -804,6 +976,41 @@ It shouldn't, and the design doesn't ask it to. What runs where:
   wall-clock comparisons, each under a predeclared decision rule so a
   noisy run classifies as *indeterminate* rather than a false verdict.
 
+There is a third case those two boxes don't cover, and it arrives exactly
+when the lab succeeds: an **adaptive** policy, whose output legitimately
+differs per machine and per run. Its request counts aren't stable, so box one
+loses its grip, and asserting a timing to compensate would hand the claim
+back to box two's noise. DuckDB faced this when its gap became measured and
+answered it with four assertions, none of which depend on the measured
+numbers — a pattern worth adopting wholesale:
+
+1. **Assert the value that predates measurement exactly.** The first row
+   group of a scan is planned before any sample exists, so it must fall back
+   to the static default. That number is exactly knowable on every machine.
+   It catches the fallback path breaking, the default drifting, and the model
+   firing before it has grounds to.
+2. **Assert the clamp, not the value.** Every gap the policy ever emits must
+   lie within its declared bounds. Any machine satisfies that, so the check
+   never flakes — and it catches the failures that actually happen: unit
+   errors (seconds against milliseconds is a 1000x gap), a bypassed clamp,
+   NaN or overflow producing garbage.
+3. **Assert that it moved, not where it moved to.** More than one distinct
+   value across a scan proves the policy came off its default. This catches
+   the regression that is otherwise invisible — an estimator that silently
+   never produces an estimate, leaving a correct-looking, permanently
+   non-adaptive reader. Given that a fit needs samples of differing sizes
+   before it can report anything (§5.3), that is a live failure mode, not a
+   hypothetical.
+4. **Assert the override exactly.** Pinning the threshold must produce
+   precisely the pinned value, including the degenerate "never merge" case —
+   which both tests the escape hatch and gives every other test a way to
+   switch the adaptive machinery off.
+
+All four are noise-free, involve no timing, and run on every commit. Recorded
+here because it changes what a policy graduation has to carry (§3): a
+candidate can arrive with CI-enforceable invariants attached instead of
+becoming untestable the moment it stops being a constant.
+
 As a side benefit, the lab's deterministic and low-noise series are much
 better inputs for automated regression detection than today's
 ~20%-variance end-to-end timings — directly relevant to
@@ -888,6 +1095,20 @@ retries and failures; latency distributions and tails; decode and consumer
 backpressure; cancellation; request price. A term is added only after an
 experiment shows its omission changes a decision Hardwood needs to make.
 
+Two of these now have identified upgrade paths, which changes them from open
+omissions to deliberate deferrals:
+
+- **Latency distributions and tails.** A lognormal moment-matched to a
+  requested `(mean, stddev)` is the cheap version, degenerating to today's
+  constant `L` at `stddev = 0` (§8.7). Only the injector needs it; the scorer
+  would need a distributional notion of "completion time" to follow, which is
+  a larger change and not proposed.
+- **Aggregate bandwidth limits.** The demo's distant-region cell (Appendix E
+  finding 1) is the motivating observation and DuckDB's saturation
+  measurements (§8.6) bound the range worth sweeping. Still not added: the
+  rule stands that a term is checked on a *fresh* experiment, and Appendix F
+  is the natural place to earn it.
+
 ## Appendix C: transport calibration protocol (lane 2)
 
 Per profile, before any contender measurement:
@@ -902,7 +1123,14 @@ Per profile, before any contender measurement:
    — a control that silently serialized on one connection would otherwise
    masquerade as aggregate contention;
 4. fit achieved `(L_eff, B_eff)` from warm controls; feed *achieved* values
-   into lane 1's model rather than the requested toxic settings;
+   into lane 1's model rather than the requested toxic settings. Several
+   sizes are required rather than preferred: fitting
+   `total_time = L + bytes/B` from transfers that were all the same size
+   leaves the fixed and per-byte terms **not separately identifiable** — any
+   `(L, B)` pair on a line through that single point fits equally well.
+   DuckDB's local estimator refuses to report at all until it has two
+   differing sizes for this reason (§5.3); a calibration that measured one
+   size would produce a confident, arbitrary split;
 5. **freeze calibration and tolerances before contender runs** — replacing
    a profile after seeing contender results is a new experiment, not an
    adjustment.
@@ -911,6 +1139,15 @@ Each run records three artifacts: the requested profile, the transport
 configuration (image digests, toxic settings), and the immutable
 calibration result. Without all three, a calibration that missed its
 target is indistinguishable from one that reproduced it.
+
+The same discipline extends to lane 3 when it runs: establish the path's
+ceiling with an **independent tool** before attributing any shortfall to
+Hardwood. DuckDB's published runs confirm the 25 Gbit/s line rate with a
+separate S3 client and sample the host's NIC byte counter alongside query
+time, which is what lets "the link is saturated" be a measurement rather than
+an inference. A Hardwood number that is 40% of line rate means something
+different depending on whether anything on that host has ever reached line
+rate.
 
 Verified feasibility on the pinned images: S3Proxy's `LatencyBlobStore`
 adds configured per-op latency correctly; its stream throttle fails with
@@ -1284,11 +1521,103 @@ rather than a winner.)
    demand pattern, not I/O cost. The gap-tuning question only exists once
    storage has a price.
 
+   There is a second reading of the same fact, and it is not free. Because
+   the faults land inside decode, on the decode thread, there is nothing for
+   Hardwood's prefetch chains to overlap on a local file — the fetch is
+   instant precisely because the cost has been deferred past the point where
+   read-ahead could hide it. DuckDB's async read-ahead reports roughly 1.5x
+   on a cold local scan (and nothing measurable warm) by overlapping real
+   reads with decoding, which is the win mmap's deferral structurally
+   forecloses. That is not a finding about plan shape and not something this
+   lab measures: separating fault cost from decode cost needs
+   OS-and-hardware-level instrumentation (fault counts, TLB behavior,
+   page-cache state) rather than a seam trace, and it belongs to the
+   mmap-versus-`pread` question tracked in the reader I/O research notes
+   rather than to #763. Recorded here so "fetch is free; moot" is not read as
+   "there is nothing here."
+
 **The missing cell:** a regime where splitting *wins* needs per-connection
 bandwidth as the bottleneck with aggregate headroom — same-region S3 from
 this host is the natural candidate (low RTT, per-stream rate well below
 the NIC, so streams should genuinely stack). A fixture with real
-inter-column gaps, making fusion pay for dead bytes, is the other axis.
+inter-column gaps, making fusion pay for dead bytes, is the other axis. A
+third axis, identified after these runs and specified in Appendix F, is row
+group *count*: with few enough requests in flight, per-connection bandwidth
+binds by construction, whatever the network is capable of.
+
+## Appendix F: the row-group-count experiment
+
+A second pilot, cheaper than Appendix D and pointed at a different question:
+not "which gap" but "does the gap matter compared with how many requests are
+in flight at all."
+
+### Why it is worth running first
+
+Hardwood builds fetch plans one row group at a time as the workers reach it
+(§5.1), and prefetch is strictly one-ahead within a column or region (§7.1).
+Nothing looks ahead *across* row groups. So the number of requests Hardwood
+can have outstanding is bounded, roughly, by the projected column count of
+the row group currently being read — and after cross-column coalescing, by
+however many groups that collapses into. In the demo's fused runs, that
+number was one.
+
+DuckDB's published sweep is the same shape measured on a real path: on
+identical data at same-region S3, wall clock ran 2.11 s at 306 row groups of
+~70 MB, 3.69 s at 10, 8.01 s at 4, and 25.26 s at 1 — a 12x regression on
+files that were *smaller* on disk because larger row groups compress better.
+Their stated mechanism is exactly the bound above: the query's projection
+yielded two requests per row group, so four row groups exposed only about
+eight concurrent streams, and one row group degenerated to two very long
+ones. DuckDB's answer was read-ahead depth across row groups; Hardwood has no
+such mechanism, so it should exhibit the same collapse, and earlier.
+
+If that holds, it reorders the lab's own priorities: tuning a coalescing
+threshold inside a row group is second-order against a regime where too few
+requests exist to fill the link at any threshold. If it does not hold, that
+is a finding about Hardwood's concurrency model worth having explicitly.
+
+### Fixture
+
+One dataset, written several times at different `ROW_GROUP_SIZE` settings so
+total useful bytes and schema are held constant and only row group count
+varies — the same discipline as Appendix D's controlled gap, applied to a
+different axis. As there, the generator reads each footer back and asserts
+the realized row group count, offsets, and per-column chunk sizes rather than
+inferring them from row counts. Each variant carries the same expected row
+count, per-column null counts, and order-sensitive value digest, so a
+mis-written variant fails as a correctness error rather than a timing one.
+
+### What is measured, in ladder order
+
+1. **Scorer sweep** (free): price each variant's captured plans across the
+   §8.6 profiles at several concurrency limits. This is where the
+   concurrency term earns or loses its keep — the collapse should appear as a
+   plan whose completion time stops improving once its node count falls below
+   the concurrency cap, which the model *can* express even though it cannot
+   express aggregate bandwidth.
+2. **Structural evidence** (noise-free, every commit): maximum concurrent
+   `readRange` calls, request count, and requested bytes per variant. The
+   central claim — "few row groups means few concurrent requests" — is
+   structural and needs no clock. If it fails here, nothing below matters.
+3. **Sleep benchmark** at two profiles for the two extreme variants and one
+   in between, under §8.9's decision rule.
+4. **Transport lane** for one cell, if steps 1–3 disagree about where the
+   knee is.
+
+### The distinguishing prediction
+
+The scorer, having no aggregate-bandwidth term, should predict that splitting
+a large fused request into per-column requests recovers most of the loss at
+low row group counts. If the execution lanes agree, the missing term from
+§7.2 does not bind in this regime and the scorer is usable here. If they
+disagree in the direction the distant-region cell disagreed — split gains
+less than predicted, or nothing — that is the same aggregate-sharing
+mechanism showing up in a second, independently constructed cell, which is
+what Appendix B says a new model term has to earn before it is added.
+
+Either outcome is publishable inside the project: the first extends where the
+cheap method can be trusted, the second is the fresh experiment the
+aggregate-bandwidth term needs.
 
 ## Sources
 
@@ -1304,10 +1633,23 @@ inter-column gaps, making fusion pay for dead bytes, is the other axis.
 - [AWS S3 performance design patterns](https://docs.aws.amazon.com/AmazonS3/latest/userguide/optimizing-performance-design-patterns.html)
 - [HADOOP-18103: S3A vectored I/O](https://issues.apache.org/jira/browse/HADOOP-18103)
 - [Arrow C++ caching interfaces](https://github.com/apache/arrow/blob/main/cpp/src/arrow/io/caching.h) (`CacheOptions::MakeFromNetworkMetrics`)
-- [DuckDB Parquet prefetch cost model](https://github.com/duckdb/duckdb/tree/main/extension/parquet)
 - [arrow-rs object_store coalescing](https://github.com/apache/arrow-rs/tree/main/object_store)
 - [Velox Hive connector file settings](https://github.com/facebookincubator/velox/blob/main/velox/connectors/hive/FileConfig.h)
 - [ClickHouse settings](https://github.com/ClickHouse/ClickHouse/blob/master/src/Core/Settings.cpp)
+
+### DuckDB asynchronous I/O (`v2.0.0-dev`, read 2026-08)
+
+The article supplies the architecture and the benchmark numbers; the
+constants, estimator shapes, and test patterns cited above come from source,
+since the article states none of them.
+
+- [*Asynchronous I/O in DuckDB*](https://duckdb.org/2026/07/31/asynchronous-io) — thread pools, jobs and fetch tasks, `read_ahead_depth`, the row-group-size sweep and saturation measurements (§5.4, §8.6, Appendix F)
+- `extension/parquet/include/parquet_prefetch_cost_model.hpp`, `extension/parquet/parquet_prefetch_cost_model.cpp` — `gap = L × B`, `GAP_MIN`/`GAP_MAX`, EWMA smoothing (§5.3)
+- `duckdb-httpfs/src/http/httpfs.cpp`, `src/include/http/httpfs.hpp` — the TTFB-based remote estimator and its minimum bandwidth sample size (§5.3)
+- `src/storage/external_file_cache/caching_file_system.cpp` — the local least-squares `(L, B)` fit and its two-differing-sizes requirement (§5.3, Appendix C)
+- `extension/parquet/parquet_reader.cpp`, `extension/parquet/include/parquet_reader.hpp` — strategy selection, the `ParquetPrefetch` log records, over-fetch ("free rider") marking (§5.3)
+- `test/extension/debug_fs/`, `test/extension/debug_fs/io_latency_model.cpp` — the seeded lognormal latency-injecting filesystem decorator (§5.4, §8.7)
+- `test/sql/copy/parquet/parquet_prefetch_cost_model.test`, `parquet_prefetch_cost_model_remote.test` — the four-assertion pattern for testing an adaptive policy (§10)
 
 ### Controlled and emulated execution
 
